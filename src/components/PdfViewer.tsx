@@ -11,9 +11,10 @@ if (typeof window !== "undefined") {
 }
 
 export function PdfViewer() {
-  const { file, document, currentPageIndex, zoom, setDocument, setFabricCanvas } = usePdfStore();
+  const { file, document, currentPageIndex, zoom, setDocument, setFabricCanvas, pageEdits } = usePdfStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const fabricCanvasRef = useRef<HTMLCanvasElement>(null);
   const [isRendered, setIsRendered] = useState(false);
 
@@ -44,13 +45,13 @@ export function PdfViewer() {
     };
   }, [file, setDocument]);
 
-  // 2. Render the Active Page to HTML Canvas
+  // 2. Render the Active Page to HTML Canvas and Text Layer
   useEffect(() => {
     let renderTask: pdfjsLib.RenderTask | null = null;
     let isActive = true;
 
     const renderPage = async () => {
-      if (!document || !pdfCanvasRef.current) return;
+      if (!document || !pdfCanvasRef.current || !textLayerRef.current) return;
       setIsRendered(false);
 
       try {
@@ -87,9 +88,55 @@ export function PdfViewer() {
         renderTask = page.render(renderContext);
         await renderTask.promise;
 
-        if (isActive) {
-          setIsRendered(true);
-        }
+        if (!isActive) return;
+
+        // Render text overlay for edits
+        const textContent = await page.getTextContent();
+        if (!isActive) return;
+
+        const tlDiv = textLayerRef.current;
+        tlDiv.innerHTML = "";
+        tlDiv.style.width = `${logicalViewport.width}px`;
+        tlDiv.style.height = `${logicalViewport.height}px`;
+
+        const currentPageEdits = usePdfStore.getState().pageEdits[currentPageIndex] || {};
+
+        textContent.items.forEach((item, idx) => {
+          if (!("str" in item) || !item.str) return;
+          const editData = currentPageEdits[idx];
+          
+          // Only show span if user made an edit
+          if (!editData) return;
+
+          const tx = pdfjsLib.Util.transform(logicalViewport.transform, item.transform);
+          const fontHeight = Math.hypot(tx[2], tx[3]);
+          if (fontHeight < 2) return;
+
+          const topPx = tx[5] - fontHeight * 0.8;
+          const leftPx = tx[4];
+
+          const span = window.document.createElement("span");
+          span.innerHTML = editData.text; // Contains formatting
+          Object.assign(span.style, {
+            position: "absolute",
+            left: `${leftPx}px`,
+            top: `${topPx}px`,
+            fontSize: `${fontHeight}px`,
+            lineHeight: "1",
+            whiteSpace: "pre",
+            transformOrigin: "0% 0%",
+            color: "rgba(0,0,0,0.88)",
+            background: "#fff", // Hide original text
+            pointerEvents: "none",
+            zIndex: "5",
+            display: "inline-block",
+            fontFamily: "sans-serif"
+          });
+          
+          tlDiv.appendChild(span);
+        });
+
+        setIsRendered(true);
       } catch (error) {
         if (error instanceof pdfjsLib.RenderingCancelledException) {
           // Normal during fast re-renders
@@ -107,7 +154,7 @@ export function PdfViewer() {
         renderTask.cancel();
       }
     };
-  }, [document, currentPageIndex, zoom]);
+  }, [document, currentPageIndex, zoom, pageEdits]); // Re-render if string changes
 
   // 3. Initialize Fabric.js Overlay once PDF is rendered
   useEffect(() => {
@@ -175,6 +222,12 @@ export function PdfViewer() {
         <canvas
           ref={pdfCanvasRef}
           className="absolute top-0 left-0 z-0 pointer-events-none"
+        />
+
+        {/* Text edits layer */}
+        <div
+            ref={textLayerRef}
+            className="absolute top-0 left-0 z-5 pointer-events-none overflow-hidden"
         />
 
         {/* Transparent Fabric.js Canvas (Interaction Layer) */}
