@@ -20,42 +20,43 @@ export async function exportToPdf(editorHtml: string, _filename = "document") {
   <meta charset="utf-8"/>
   <title>Document</title>
   <style>
-    @page { size: A4; margin: 2.5cm; }
+    @page { size: A4; margin: 0; }
     * { box-sizing: border-box; }
-    body {
-      font-family: "Times New Roman", serif;
-      font-size: 12pt;
-      line-height: 1.7;
-      color: #111;
-      margin: 0;
-      padding: 0;
+    body { margin: 0; padding: 0; background: #fff; }
+    
+    /* Ensure the exported container fits the page */
+    .export-container {
+      position: relative;
+      width: 210mm;
+      height: 297mm;
+      overflow: hidden;
+      page-break-after: always;
     }
-    h1 { font-size: 22pt; font-weight: 700; margin: 18pt 0 8pt; }
-    h2 { font-size: 17pt; font-weight: 700; margin: 14pt 0 6pt; }
-    h3 { font-size: 13pt; font-weight: 700; margin: 11pt 0 4pt; }
-    p  { margin: 0 0 8pt; orphans: 3; widows: 3; }
-    ul { list-style: disc;    margin: 0 0 8pt 20pt; padding: 0; }
-    ol { list-style: decimal; margin: 0 0 8pt 20pt; padding: 0; }
-    li { margin-bottom: 3pt; }
-    hr { border: none; border-top: 1px dashed #999; margin: 14pt 0; }
-    mark { background: #fde68a; padding: 0 2px; }
-    strong { font-weight: 700; }
-    em { font-style: italic; }
-    u  { text-decoration: underline; }
-    s  { text-decoration: line-through; }
+
+    canvas { display: block; max-width: 100%; }
+    
+    /* Preserve our absolute text layer styles */
+    span {
+      white-space: pre;
+      line-height: 1;
+      display: inline-block;
+    }
   </style>
 </head>
-<body>${editorHtml}</body>
+<body>
+  <div class="export-container">
+    ${editorHtml}
+  </div>
+</body>
 </html>`);
   doc.close();
 
-  // Give the iframe time to render fonts
-  await new Promise<void>((resolve) => setTimeout(resolve, 600));
+  // Give time for images/canvases to render
+  await new Promise<void>((resolve) => setTimeout(resolve, 800));
 
   iframe.contentWindow!.focus();
   iframe.contentWindow!.print();
 
-  // Clean up after the dialog is dismissed
   setTimeout(() => document.body.removeChild(iframe), 2000);
 }
 
