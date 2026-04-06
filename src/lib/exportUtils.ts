@@ -68,7 +68,7 @@ export async function exportToDocx(editorHtml: string, filename = "document.docx
 
   const paragraphs: Paragraph[] = [];
 
-  const headingMap: Record<string, HeadingLevel> = {
+  const headingMap: Record<string, any> = {
     h1: HeadingLevel.HEADING_1,
     h2: HeadingLevel.HEADING_2,
     h3: HeadingLevel.HEADING_3,

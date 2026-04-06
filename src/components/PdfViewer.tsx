@@ -28,7 +28,7 @@ export function PdfViewer() {
         const arrayBuffer = await file.arrayBuffer();
         const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
         const pdfDoc = await loadingTask.promise;
-        
+
         if (isDocumentActive) {
           setDocument(pdfDoc);
         }
@@ -55,7 +55,7 @@ export function PdfViewer() {
 
       try {
         const page = await document.getPage(currentPageIndex + 1);
-        
+
         // High DPI (Retina) display support
         const pixelRatio = window.devicePixelRatio || 1;
         const logicalViewport = page.getViewport({ scale: zoom });
@@ -63,7 +63,7 @@ export function PdfViewer() {
 
         const canvas = pdfCanvasRef.current;
         const context = canvas.getContext("2d");
-        
+
         if (!context || !isActive) return;
 
         // Set physical resolution
@@ -81,7 +81,7 @@ export function PdfViewer() {
         const renderContext = {
           canvasContext: context,
           viewport: renderViewport,
-          canvas: canvas as any 
+          canvas: canvas as any
         };
 
         renderTask = page.render(renderContext);
@@ -124,7 +124,7 @@ export function PdfViewer() {
     const pdfCanvas = pdfCanvasRef.current;
     const logicalWidth = parseFloat(pdfCanvas.dataset.logicalWidth || String(pdfCanvas.width));
     const logicalHeight = parseFloat(pdfCanvas.dataset.logicalHeight || String(pdfCanvas.height));
-    
+
     // Explicitly size the container to match
     containerRef.current.style.width = `${logicalWidth}px`;
     containerRef.current.style.height = `${logicalHeight}px`;
@@ -164,7 +164,7 @@ export function PdfViewer() {
 
   return (
     <div className="relative overflow-auto w-full h-full flex justify-center items-start bg-slate-900 p-8">
-      <div 
+      <div
         ref={containerRef}
         className="relative shadow-2xl bg-white"
         style={{
@@ -172,55 +172,13 @@ export function PdfViewer() {
         }}
       >
         {/* Visible PDF.js Canvas (Base Layer) */}
-        <canvas 
-          ref={pdfCanvasRef} 
-          className="absolute top-0 left-0 z-0 pointer-events-none" 
+        <canvas
+          ref={pdfCanvasRef}
+          className="absolute top-0 left-0 z-0 pointer-events-none"
         />
 
-        {/* 
-            Sync Layer: Mirror edits made in "Edit as Document" mode.
-            Renders modified text spans so changes reflect in Annotate mode.
-        */}
-        <div 
-          className="absolute top-0 left-0 z-10 pointer-events-none overflow-hidden"
-          style={{ width: '100%', height: '100%' }}
-        >
-          {document && (() => {
-            const pageIdx = currentPageIndex;
-            const edits = usePdfStore.getState().pageEdits[pageIdx];
-            if (!edits) return null;
-
-            return Object.entries(edits).map(([idx, edit]) => {
-              if (typeof edit === "object" && "text" in edit) {
-                return (
-                  <span
-                    key={`sync-edit-${idx}`}
-                    style={{
-                      position:       "absolute",
-                      left:           `${edit.x}px`,
-                      top:            `${edit.y}px`,
-                      fontSize:       `${edit.fontHeight}px`,
-                      lineHeight:     "1",
-                      whiteSpace:     "pre",
-                      color:          edit.styles.color || "rgba(0,0,0,0.88)",
-                      fontWeight:     edit.styles.fontWeight || "normal",
-                      fontStyle:      edit.styles.fontStyle || "normal",
-                      textDecoration: edit.styles.textDecoration || "none",
-                      pointerEvents:  "none",
-                      zIndex:         5,
-                    }}
-                  >
-                    {edit.text}
-                  </span>
-                );
-              }
-              return null;
-            });
-          })()}
-        </div>
-        
         {/* Transparent Fabric.js Canvas (Interaction Layer) */}
-        <div className="absolute top-0 left-0 z-20 w-full h-full">
+        <div className="absolute top-0 left-0 z-10 w-full h-full">
           <canvas ref={fabricCanvasRef} />
         </div>
       </div>
