@@ -15,21 +15,28 @@ if (typeof window !== "undefined") {
 }
 
 const FONT_FAMILIES = [
-  { label: "Arial", value: "Arial" },
-  { label: "Times New Roman", value: "'Times New Roman', serif" },
-  { label: "Courier New", value: "'Courier New', monospace" },
-  { label: "Georgia", value: "Georgia, serif" },
-  { label: "Verdana", value: "Verdana, sans-serif" },
+  { label: "Default",          value: "sans-serif" },
+  { label: "Arial",            value: "Arial, sans-serif" },
+  { label: "Helvetica",        value: "Helvetica, Arial, sans-serif" },
+  { label: "Times New Roman",  value: "'Times New Roman', serif" },
+  { label: "Courier New",      value: "'Courier New', monospace" },
+  { label: "Georgia",          value: "Georgia, serif" },
+  { label: "Verdana",          value: "Verdana, Geneva, sans-serif" },
+  { label: "Tahoma",           value: "Tahoma, Geneva, sans-serif" },
+  { label: "Garamond",         value: "Garamond, serif" },
+  { label: "Palatino",         value: "'Palatino Linotype', Palatino, serif" },
+  { label: "Comic Sans MS",    value: "'Comic Sans MS', cursive" },
+  { label: "Impact",           value: "Impact, fantasy" },
 ];
 
 const FONT_SIZES = [
-  { label: "1 (Small)", value: "1" },
-  { label: "2", value: "2" },
-  { label: "3 (Normal)", value: "3" },
-  { label: "4", value: "4" },
-  { label: "5", value: "5" },
-  { label: "6", value: "6" },
-  { label: "7 (Huge)", value: "7" },
+  { label: "1 (8pt)",  value: "1" },
+  { label: "2 (10pt)", value: "2" },
+  { label: "3 (12pt)", value: "3" },
+  { label: "4 (14pt)", value: "4" },
+  { label: "5 (18pt)", value: "5" },
+  { label: "6 (24pt)", value: "6" },
+  { label: "7 (36pt)", value: "7" },
 ];
 
 export function PdfInplaceEditor() {
@@ -196,9 +203,11 @@ export function PdfInplaceEditor() {
           };
           applyImageConstraints();
 
+          span.dataset.edited = editData ? "true" : "false";
+          
           if (view === "preview" && editData) {
             span.style.color = "rgba(0,0,0,0.88)";
-            span.style.background = "#fff";
+            span.style.background = "#ffffff"; // completely block underlying text when previewing
           }
 
           span.addEventListener("focus", () => {
@@ -245,8 +254,34 @@ export function PdfInplaceEditor() {
   }, [pdfDoc, currentPageIndex, zoom, view]);
 
   const handleExportPdf = () => {
-    if (!wrapRef.current) return;
-    exportToPdf(wrapRef.current.innerHTML, "edited_pdf");
+    if (!wrapRef.current || !visCanvasRef.current) return;
+    const cloned = wrapRef.current.cloneNode(true) as HTMLDivElement;
+    
+    // Embed the canvas pixel data as an image so the background raster exports correctly
+    const cvs = cloned.querySelector("canvas");
+    if (cvs) {
+      const img = document.createElement("img");
+      img.src = visCanvasRef.current.toDataURL("image/jpeg", 0.95);
+      img.style.display = "block";
+      img.style.maxWidth = "100%";
+      cvs.replaceWith(img);
+    }
+
+    // Force styles for spans in exported PDF
+    const spans = cloned.querySelectorAll("span");
+    spans.forEach(span => {
+      // If the text was never touched, the span doesn't need to obscure the perfect native canvas text.
+      if (span.dataset.edited !== "true") {
+        span.style.display = "none"; 
+      } else {
+        // If it WAS edited (or entirely deleted/blank), it must remain opaque to physically block the canvas pixels below it.
+        span.style.color = "rgba(0,0,0,1)";
+        span.style.background = "#ffffff";
+        span.style.display = "inline-block";
+      }
+    });
+
+    exportToPdf(cloned.innerHTML, "edited_pdf");
   };
 
   const handleExportDocx = () => {

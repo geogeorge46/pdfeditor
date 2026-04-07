@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { TextStyle } from "@tiptap/extension-text-style";
 import FontFamily from "@tiptap/extension-font-family";
 import Color from "@tiptap/extension-color";
 import Underline from "@tiptap/extension-underline";
@@ -17,22 +18,24 @@ import { TableRow } from "@tiptap/extension-table-row";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { CodeBlock } from "@tiptap/extension-code-block";
+import TaskItem from "@tiptap/extension-task-item";
+import TaskList from "@tiptap/extension-task-list";
 import { Extension } from "@tiptap/core";
+import * as pdfjsLib from "pdfjs-dist";
 import {
   Bold, Italic, Underline as UnderlineIcon, Strikethrough,
   AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  List, ListOrdered, Highlighter, Download, FileDown,
+  List, ListOrdered, Highlighter, Download, FileDown, FileUp,
   Loader2, Palette, Eye, PenLine, Image as ImageIcon,
   Link2, Subscript as SubIcon, Superscript as SupIcon,
   Table as TableIcon, Code2, Quote, Minus, Indent,
   Outdent, RotateCcw, RotateCw, Search, Eraser,
   Triangle, Square, Circle, Minus as MinusIcon,
   ChevronDown, Type, Hash, AlignVerticalJustifyCenter,
-  LayoutList, Info, X
+  LayoutList, Info, X, CheckSquare, Save, CheckCircle2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePdfStore } from "@/lib/store";
-import { extractPageText, blocksToHtml } from "@/lib/pdfToText";
 import { exportToPdf, exportToDocx } from "@/lib/exportUtils";
 
 /* ── Custom FontSize extension ───────────────────────────────────────────── */
@@ -87,13 +90,21 @@ const LineHeight = Extension.create({
 /* ── Constants ───────────────────────────────────────────────────────────── */
 const FONT_FAMILIES = [
   { label: "Default",          value: "sans-serif" },
-  { label: "Serif",            value: "Georgia, serif" },
   { label: "Mono",             value: "monospace" },
   { label: "Arial",            value: "Arial, sans-serif" },
+  { label: "Helvetica",        value: "Helvetica, Arial, sans-serif" },
   { label: "Times New Roman",  value: "'Times New Roman', serif" },
   { label: "Courier New",      value: "'Courier New', monospace" },
   { label: "Roboto",           value: "Roboto, sans-serif" },
   { label: "Trebuchet MS",     value: "'Trebuchet MS', sans-serif" },
+  { label: "Verdana",          value: "Verdana, Geneva, sans-serif" },
+  { label: "Tahoma",           value: "Tahoma, Geneva, sans-serif" },
+  { label: "Georgia",          value: "Georgia, serif" },
+  { label: "Garamond",         value: "Garamond, serif" },
+  { label: "Palatino",         value: "'Palatino Linotype', 'Book Antiqua', Palatino, serif" },
+  { label: "Comic Sans MS",    value: "'Comic Sans MS', cursive" },
+  { label: "Impact",           value: "Impact, fantasy" },
+  { label: "Brush Script MT",  value: "'Brush Script MT', cursive" },
 ];
 
 const FONT_SIZES = [
@@ -435,18 +446,27 @@ function useWordCount(editor: any) {
 }
 
 /* ── Main component ──────────────────────────────────────────────────────── */
-export function DocumentEditor() {
-  const { document: pdfDoc, numPages } = usePdfStore();
+export function DocumentEditor({ onSaveToAnnotate }: { onSaveToAnnotate?: (file: File) => void } = {}) {
+  // Word Editor is FULLY ISOLATED from the PDF store.
+  // It does NOT read/write pageEdits or pdfDoc.
+  // The original PDF in Annotate / Edit-over-PDF is NEVER touched.
+  // Changes only reach those modes when the user explicitly clicks "Save to Annotate".
   const [view, setView]               = useState<"edit" | "preview">("edit");
-  const [isExtracting, setExtracting] = useState(false);
-  const [isExporting,  setExporting]  = useState<"pdf" | "docx" | null>(null);
-  const [filename, setFilename]       = useState("document");
+  const [isExporting,  setExporting]  = useState<"pdf" | "docx" | "annotate" | null>(null);
+  const [filename, setFilename]       = useState("Untitled Document");
+  const [lastSaved, setLastSaved]     = useState<Date | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  const AUTOSAVE_KEY     = "word-editor-draft";
+  const AUTOSAVE_TIME_KEY = "word-editor-draft-time";
 
   // Dropdown state
   const [showTable,    setShowTable]    = useState(false);
   const [showShapes,   setShowShapes]   = useState(false);
   const [showFindRepl, setShowFindRepl] = useState(false);
   const [showImgModal, setShowImgModal] = useState(false);
+
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   // Refs for closing dropdowns on outside click
   const tableRef  = useRef<HTMLDivElement>(null);
@@ -461,10 +481,15 @@ export function DocumentEditor() {
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
+  // Access PDF from the store for optional user-triggered import
+  const pdfDoc = usePdfStore((s) => s.document);
+  const [isImporting, setIsImporting] = useState(false);
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
       StarterKit,
+      TextStyle,
       FontFamily,
       FontSize,
       LineHeight,
@@ -481,36 +506,235 @@ export function DocumentEditor() {
       TableCell,
       TableHeader,
       CodeBlock,
+      TaskList,
+      TaskItem.configure({ nested: true }),
     ],
     content: "<p></p>",
     editorProps: {
       attributes: { class: "outline-none" },
     },
+    onUpdate: ({ editor }) => {
+      const html = editor.getHTML();
+      localStorage.setItem(AUTOSAVE_KEY, html);
+      localStorage.setItem(AUTOSAVE_TIME_KEY, Date.now().toString());
+      setLastSaved(new Date());
+    }
   });
 
-  const { words, chars } = useWordCount(editor);
-
-  /* ── Extract text from every page on mount ── */
+  // Load autosaved draft on mount (isolated from PDF store)
   useEffect(() => {
-    if (!pdfDoc || !editor) return;
-    const extract = async () => {
-      setExtracting(true);
-      let html = "";
-      for (let i = 1; i <= numPages; i++) {
-        try {
-          const page = await pdfDoc.getPage(i);
-          const blocks = await extractPageText(page);
-          if (blocks.length) html += blocksToHtml(blocks);
-          if (i < numPages) html += `<hr/>`;
-        } catch (e) {
-          console.error(`Page ${i} extraction failed:`, e);
+    if (!editor) return;
+    const savedHtml = localStorage.getItem(AUTOSAVE_KEY);
+    if (savedHtml) {
+      // Skip corrupted autosave (only <hr> / empty <p> tags with no real text)
+      const textOnly = savedHtml.replace(/<[^>]*>/g, "").trim();
+      if (textOnly.length > 0) {
+        editor.commands.setContent(savedHtml);
+        const savedTime = localStorage.getItem(AUTOSAVE_TIME_KEY);
+        if (savedTime) setLastSaved(new Date(parseInt(savedTime, 10)));
+      } else {
+        // Clear the corrupted autosave
+        localStorage.removeItem(AUTOSAVE_KEY);
+        localStorage.removeItem(AUTOSAVE_TIME_KEY);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!editor]); // run only once when editor becomes available
+
+  /**
+   * User-triggered PDF import: extracts text from the currently loaded PDF
+   * and populates the Word Editor with aligned content.
+   * Only runs when the user explicitly clicks "Import from PDF".
+   */
+  const handleImportFromPdf = useCallback(async () => {
+    if (!editor || !pdfDoc) return;
+
+    const confirmed = window.confirm(
+      "This will replace your current editor content with text extracted from the loaded PDF. Continue?"
+    );
+    if (!confirmed) return;
+
+    setIsImporting(true);
+
+    try {
+      const totalPages = pdfDoc.numPages;
+      let combinedHtml = "";
+      let hasAnyText = false;
+
+      for (let p = 1; p <= totalPages; p++) {
+        const page = await pdfDoc.getPage(p);
+        const textContent = await page.getTextContent();
+        const viewport = page.getViewport({ scale: 1 });
+
+        interface RawItem {
+          str: string;
+          x: number;
+          y: number;
+          height: number;
+          width: number;
+        }
+
+        const rawItems: RawItem[] = [];
+
+        for (const item of textContent.items) {
+          if ("str" in item && item.str.trim()) {
+            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+            rawItems.push({
+              str: item.str,
+              x: tx[4],
+              y: tx[5],
+              height: Math.abs(item.transform[3]),
+              width: item.width,
+            });
+          }
+        }
+
+        if (rawItems.length === 0) continue;
+
+        hasAnyText = true;
+
+        const heights = rawItems.map((i) => i.height).filter((h) => h > 0);
+        const avgHeight = heights.reduce((a, b) => a + b, 0) / heights.length;
+        const maxHeight = Math.max(...heights);
+        const pageWidth = viewport.width;
+
+        rawItems.sort((a, b) => a.y - b.y || a.x - b.x);
+
+        // Group items into lines by Y proximity
+        const LINE_MERGE_TOLERANCE = avgHeight * 0.55;
+        interface LineData {
+          items: RawItem[];
+          y: number;
+          height: number;
+          minX: number;
+          maxX: number;
+        }
+        const lines: LineData[] = [];
+
+        for (const item of rawItems) {
+          const last = lines[lines.length - 1];
+          if (!last || Math.abs(item.y - last.y) > LINE_MERGE_TOLERANCE) {
+            lines.push({
+              items: [item],
+              y: item.y,
+              height: item.height,
+              minX: item.x,
+              maxX: item.x + item.width,
+            });
+          } else {
+            last.items.push(item);
+            last.height = Math.max(last.height, item.height);
+            last.minX = Math.min(last.minX, item.x);
+            last.maxX = Math.max(last.maxX, item.x + item.width);
+          }
+        }
+
+        // Determine text alignment for each line
+        const detectAlignment = (line: LineData): string => {
+          const leftMargin = line.minX;
+          const rightMargin = pageWidth - line.maxX;
+          const textWidth = line.maxX - line.minX;
+
+          if (textWidth > pageWidth * 0.85) return "justify";
+
+          const marginDiff = Math.abs(leftMargin - rightMargin);
+          if (marginDiff < pageWidth * 0.1 && leftMargin > pageWidth * 0.1) return "center";
+          if (rightMargin < pageWidth * 0.08 && leftMargin > pageWidth * 0.25) return "right";
+
+          return "left";
+        };
+
+        // Build blocks with alignment
+        const PARAGRAPH_GAP_MULTIPLIER = 1.6;
+
+        interface Block {
+          type: "heading" | "paragraph";
+          level?: 1 | 2 | 3;
+          text: string;
+          alignment: string;
+        }
+
+        const blocks: Block[] = [];
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const text = line.items
+            .sort((a, b) => a.x - b.x)
+            .map((it) => it.str)
+            .join(" ")
+            .trim();
+
+          if (!text) continue;
+
+          const lineH = line.height;
+          const isH1 = lineH >= maxHeight * 0.85 && lineH > avgHeight * 1.5;
+          const isH2 = !isH1 && lineH > avgHeight * 1.35;
+          const isH3 = !isH1 && !isH2 && lineH > avgHeight * 1.15;
+          const alignment = detectAlignment(line);
+
+          if (isH1) { blocks.push({ type: "heading", level: 1, text, alignment }); continue; }
+          if (isH2) { blocks.push({ type: "heading", level: 2, text, alignment }); continue; }
+          if (isH3) { blocks.push({ type: "heading", level: 3, text, alignment }); continue; }
+
+          const isNewParagraph = (() => {
+            if (i === 0) return true;
+            const prev = lines[i - 1];
+            const gap = Math.abs(line.y - prev.y);
+            const expectedSpacing = (line.height + prev.height) / 2;
+            return gap > expectedSpacing * PARAGRAPH_GAP_MULTIPLIER;
+          })();
+
+          if (isNewParagraph) {
+            blocks.push({ type: "paragraph", text, alignment });
+          } else {
+            const last = blocks[blocks.length - 1];
+            if (last?.type === "paragraph") {
+              last.text += " " + text;
+            } else {
+              blocks.push({ type: "paragraph", text, alignment });
+            }
+          }
+        }
+
+        const escapeHtml = (s: string) =>
+          s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+        const pageHtml = blocks
+          .map((b) => {
+            const safe = escapeHtml(b.text);
+            const alignStyle = b.alignment !== "left" ? ` style="text-align:${b.alignment}"` : "";
+            if (b.type === "heading") return `<h${b.level}${alignStyle}>${safe}</h${b.level}>`;
+            return `<p${alignStyle}>${safe}</p>`;
+          })
+          .join("\n");
+
+        combinedHtml += pageHtml;
+
+        if (p < totalPages) {
+          combinedHtml += `\n<hr>\n`;
         }
       }
-      editor.commands.setContent(html || "<p>No readable text found in this PDF.</p>");
-      setExtracting(false);
-    };
-    extract();
-  }, [pdfDoc, numPages, editor]);
+
+      if (!hasAnyText) {
+        alert("No extractable text found in this PDF. The PDF may be image-based (scanned). Only PDFs with native text can be imported.");
+        return;
+      }
+
+      if (combinedHtml.trim()) {
+        editor.commands.setContent(combinedHtml);
+        setLastSaved(new Date());
+        localStorage.setItem(AUTOSAVE_KEY, combinedHtml);
+        localStorage.setItem(AUTOSAVE_TIME_KEY, Date.now().toString());
+      }
+    } catch (err) {
+      console.error("PDF text extraction for Word Editor failed:", err);
+      alert("Failed to extract text from PDF. Please try again.");
+    } finally {
+      setIsImporting(false);
+    }
+  }, [editor, pdfDoc]);
+
+  const { words, chars } = useWordCount(editor);
 
   const handlePdf = useCallback(async () => {
     if (!editor) return;
@@ -526,7 +750,127 @@ export function DocumentEditor() {
     finally { setExporting(null); }
   }, [editor, filename]);
 
-  const busy = isExtracting || !!isExporting;
+  /**
+   * Render the TipTap content into a real PDF blob via html2pdf.js,
+   * then hand it to the parent as a File so Annotate / Edit-over-PDF
+   * modes can open it immediately.
+   */
+  const handleSaveToAnnotate = useCallback(async () => {
+    if (!editor || !onSaveToAnnotate) return;
+    setExporting("annotate");
+    try {
+      // Use jsPDF + html2canvas directly so we can control the render target
+      // and avoid html2canvas inheriting the app dark-theme lab() colors.
+      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+        import("jspdf" as any),
+        import("html2canvas" as any),
+      ]);
+
+      const html = editor.getHTML();
+
+      // Build a fully self-contained white-background HTML document.
+      // All colors are explicit hex/rgb so html2canvas never needs to
+      // resolve oklch / lab / CSS custom properties from the parent page.
+      const styledHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        *,*::before,*::after{box-sizing:border-box}
+        html,body{margin:0;padding:0;background:#ffffff;color:#1e293b}
+        body{font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.65;padding:48px 64px;background:#ffffff}
+        h1{font-size:28px;font-weight:700;margin:12px 0}
+        h2{font-size:22px;font-weight:600;margin:10px 0}
+        h3{font-size:18px;font-weight:600;margin:8px 0}
+        h4{font-size:15px;font-weight:600;margin:6px 0}
+        p{margin:6px 0}
+        ul,ol{padding-left:24px;margin:6px 0}
+        table{border-collapse:collapse;width:100%;margin:8px 0}
+        td,th{border:1px solid #cbd5e1;padding:5px 10px;text-align:left;background:#ffffff;color:#1e293b}
+        th{background:#f1f5f9;font-weight:600}
+        blockquote{border-left:4px solid #6366f1;margin:8px 0;padding:4px 14px;color:#475569}
+        pre,code{background:#f8fafc;color:#334155;padding:10px 14px;border-radius:6px;font-family:monospace;font-size:13px;white-space:pre-wrap}
+        hr{border:none;border-top:2px solid #e2e8f0;margin:14px 0}
+        a{color:#6366f1}
+        img{max-width:100%;height:auto;display:block}
+        mark{background:#fef08a;color:#1e293b}
+        s{text-decoration:line-through}
+        u{text-decoration:underline}
+        strong{font-weight:700}
+        em{font-style:italic}
+      </style></head><body>${html}</body></html>`;
+
+      // Render into an off-screen iframe so no dark-mode CSS leaks in.
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:794px;height:1123px;border:none;visibility:hidden";
+      document.body.appendChild(iframe);
+
+      await new Promise<void>((res) => {
+        iframe.onload = () => res();
+        iframe.srcdoc = styledHtml;
+      });
+
+      const iframeDoc = iframe.contentDocument!;
+      const body = iframeDoc.body;
+
+      // Force white bg on every element to ensure html2canvas never hits lab()
+      const allEls = iframeDoc.querySelectorAll("*");
+      allEls.forEach((el: any) => {
+        const cs = iframeDoc.defaultView!.getComputedStyle(el);
+        const bg = cs.backgroundColor;
+        // If browser returned a lab/oklch color, override to white
+        if (bg && (bg.startsWith("lab") || bg.startsWith("oklch") || bg.startsWith("color("))) {
+          (el as HTMLElement).style.backgroundColor = "#ffffff";
+        }
+      });
+
+      // Render full-page canvas
+      const canvas = await html2canvas(body, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        logging: false,
+        windowWidth: 794,
+        width: 794,
+      });
+
+      document.body.removeChild(iframe);
+
+      // Convert canvas to PDF pages (A4)
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const imgW = canvas.width;
+      const imgH = canvas.height;
+      const ratio = pageW / imgW;
+      const scaledH = imgH * ratio;
+
+      let yOffset = 0;
+      let pageCount = 0;
+      while (yOffset < scaledH) {
+        if (pageCount > 0) pdf.addPage();
+        const srcY = Math.round(yOffset / ratio);
+        const srcH = Math.min(Math.round(pageH / ratio), imgH - srcY);
+        const sliceCanvas = document.createElement("canvas");
+        sliceCanvas.width = imgW;
+        sliceCanvas.height = srcH;
+        sliceCanvas.getContext("2d")!.drawImage(canvas, 0, srcY, imgW, srcH, 0, 0, imgW, srcH);
+        const sliceDataUrl = sliceCanvas.toDataURL("image/jpeg", 0.97);
+        pdf.addImage(sliceDataUrl, "JPEG", 0, 0, pageW, srcH * ratio);
+        yOffset += pageH;
+        pageCount++;
+      }
+
+      const blob = pdf.output("blob") as Blob;
+
+      const pdfFile = new File([blob], `${filename}.pdf`, { type: "application/pdf" });
+      onSaveToAnnotate(pdfFile);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err) {
+      console.error("Save to Annotate failed:", err);
+      alert("Could not generate PDF. Please try again.");
+    } finally {
+      setExporting(null);
+    }
+  }, [editor, filename, onSaveToAnnotate]);
+  const busy = !!isExporting;
   const disabled = view === "preview";
 
   /* helpers */
@@ -572,6 +916,19 @@ export function DocumentEditor() {
   /* ── Render ──────────────────────────────────────────────────────────── */
   return (
     <div className="flex flex-col h-full bg-slate-900 overflow-hidden">
+
+      {/* ── Document Header ────────────────────────────────────────────── */}
+      <div className="bg-slate-800 border-b border-slate-700 px-3 py-1.5 flex justify-between items-center shrink-0">
+        <input 
+          value={filename} 
+          onChange={(e) => setFilename(e.target.value)}
+          className="bg-transparent text-slate-200 font-medium text-sm focus:outline-none hover:bg-slate-700 focus:bg-slate-700 rounded px-2 py-0.5 transition-colors w-[200px] sm:w-[350px]"
+          placeholder="Untitled Document"
+        />
+        <div className="text-[11px] text-slate-400">
+          {lastSaved ? `Autosaved: ${lastSaved.toLocaleTimeString()}` : "Not saved"}
+        </div>
+      </div>
 
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="border-b border-slate-700 bg-slate-800 px-2 py-1.5 flex flex-wrap items-center gap-1 shrink-0 select-none">
@@ -707,6 +1064,7 @@ export function DocumentEditor() {
         {/* Lists */}
         <TB title="Bullet List"   onClick={() => editor?.chain().focus().toggleBulletList().run()}  active={editor?.isActive("bulletList")}  disabled={disabled}><List className="w-3.5 h-3.5" /></TB>
         <TB title="Numbered List" onClick={() => editor?.chain().focus().toggleOrderedList().run()} active={editor?.isActive("orderedList")} disabled={disabled}><ListOrdered className="w-3.5 h-3.5" /></TB>
+        <TB title="Task List"     onClick={() => editor?.chain().focus().toggleTaskList().run()}    active={editor?.isActive("taskList")}    disabled={disabled}><CheckSquare className="w-3.5 h-3.5" /></TB>
         <TB title="Blockquote" onClick={() => editor?.chain().focus().toggleBlockquote().run()} active={editor?.isActive("blockquote")} disabled={disabled}><Quote className="w-3.5 h-3.5" /></TB>
         <TB title="Code Block" onClick={() => editor?.chain().focus().toggleCodeBlock().run()} active={editor?.isActive("codeBlock")} disabled={disabled}><Code2 className="w-3.5 h-3.5" /></TB>
 
@@ -748,6 +1106,17 @@ export function DocumentEditor() {
 
         <div className="flex-1" />
 
+        {/* Import from loaded PDF — only shown when a PDF is loaded */}
+        {pdfDoc && (
+          <Button size="sm" disabled={busy || isImporting}
+            title="Import text content from the currently loaded PDF into this editor"
+            className="h-7 bg-amber-600 hover:bg-amber-500 text-white text-xs px-3 gap-1"
+            onClick={handleImportFromPdf}>
+            {isImporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileUp className="w-3 h-3" />}
+            {isImporting ? "Importing…" : "Import from PDF"}
+          </Button>
+        )}
+
         {/* Filename + export */}
         <input
           className="h-7 rounded bg-slate-700 border border-slate-600 text-slate-200 text-xs px-3 w-32 focus:outline-none"
@@ -755,6 +1124,25 @@ export function DocumentEditor() {
           onChange={(e) => setFilename(e.target.value)}
           placeholder="filename"
         />
+
+        {/* Save to Annotate — only shown when a callback was provided */}
+        {onSaveToAnnotate && (
+          <Button size="sm" disabled={busy}
+            title="Render this document to PDF and open it in Annotate / Edit over PDF modes"
+            className={`h-7 text-white text-xs px-3 gap-1 transition-all ${
+              saveSuccess
+                ? "bg-emerald-500 hover:bg-emerald-400"
+                : "bg-violet-600 hover:bg-violet-500"
+            }`}
+            onClick={handleSaveToAnnotate}>
+            {isExporting === "annotate"
+              ? <Loader2 className="w-3 h-3 animate-spin" />
+              : saveSuccess
+              ? <CheckCircle2 className="w-3 h-3" />
+              : <Save className="w-3 h-3" />}
+            {saveSuccess ? "Saved!" : "Save to Annotate"}
+          </Button>
+        )}
 
         <Button size="sm" disabled={busy}
           className="h-7 bg-indigo-600 hover:bg-indigo-700 text-white text-xs px-3 gap-1"
@@ -772,21 +1160,25 @@ export function DocumentEditor() {
       </div>
 
       {/* ── Body ────────────────────────────────────────────────────────── */}
-      {isExtracting ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400">
-          <Loader2 className="w-8 h-8 animate-spin text-indigo-400" />
-          <p className="text-sm">Extracting text from PDF…</p>
-          <p className="text-xs text-slate-500">This may take a moment for large documents.</p>
-        </div>
-      ) : view === "edit" ? (
-        <div className="flex-1 overflow-y-auto bg-slate-100 px-6 py-8">
-          <div className="max-w-[794px] mx-auto min-h-[1123px] bg-white shadow-lg rounded px-16 py-14 text-slate-900 text-[13.5px] leading-relaxed">
+      {view === "edit" ? (
+        /* ── Continuous edit canvas ─────────────────────────────────────── */
+        <div className="doc-scroll-area flex-1 overflow-y-auto py-8">
+          <div
+            ref={canvasRef}
+            className="doc-page-canvas max-w-[850px] mx-auto text-slate-900 text-[14.5px] leading-relaxed transition-all"
+            style={{ minHeight: '800px' }}
+          >
             <EditorContent editor={editor} />
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto bg-slate-300 px-6 py-8">
-          <div className="max-w-[794px] mx-auto min-h-[1123px] bg-white shadow-xl rounded px-16 py-14 text-slate-900 text-[13.5px] leading-relaxed">
+        /* ── Preview mode ───────────────────────────────────────────────── */
+        <div className="doc-scroll-area flex-1 overflow-y-auto py-8">
+          <div
+            ref={canvasRef}
+            className="doc-page-canvas max-w-[850px] mx-auto text-slate-900 text-[14.5px] leading-relaxed transition-all"
+            style={{ minHeight: '800px' }}
+          >
             <div
               className="ProseMirror"
               dangerouslySetInnerHTML={{ __html: editor?.getHTML() ?? "" }}

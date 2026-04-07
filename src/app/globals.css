@@ -133,6 +133,7 @@
 .ProseMirror {
   outline: none;
   min-height: 60vh;
+  color: #111827;
 }
 
 .ProseMirror h1 {
@@ -176,6 +177,41 @@
 
 .ProseMirror li {
   margin: 0.25em 0;
+}
+
+/* ── Task lists ───────────────────────────────────────────────────────── */
+ul[data-type="taskList"] {
+  list-style: none;
+  padding: 0;
+}
+
+ul[data-type="taskList"] p {
+  margin: 0;
+}
+
+ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 0.3em;
+  margin-bottom: 0.3em;
+}
+
+ul[data-type="taskList"] li > label {
+  flex: 0 0 auto;
+  margin-right: 0.5rem;
+  user-select: none;
+  margin-top: 0.2em;
+}
+
+ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+}
+
+ul[data-type="taskList"] input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: #6366f1;
+  width: 14px;
+  height: 14px;
 }
 
 .ProseMirror hr {
@@ -319,3 +355,52 @@
 /* ── Subscript / Superscript ──────────────────────────────────────────── */
 .ProseMirror sub { vertical-align: sub; font-size: 0.75em; }
 .ProseMirror sup { vertical-align: super; font-size: 0.75em; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Continuous Document Canvas (Web Layout)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.doc-scroll-area {
+  /* Ambient surrounding track color */
+  background: #f1f5f9; /* Tailwind slate-100 */
+}
+
+.doc-page-canvas {
+  /* Comfortable web reading margins */
+  padding: 80px 96px;
+  background-color: #ffffff;
+  
+  /* Soft, modern container styling */
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: 
+    0 4px 6px -1px rgba(0,0,0,0.02), 
+    0 10px 15px -3px rgba(0,0,0,0.05);
+
+  /* Margin for breathing room at top and bottom of scroll area */
+  margin-top: 16px;
+  margin-bottom: 64px;
+}
+
+/* ── Ensure ProseMirror itself takes height ────────────── */
+.doc-page-canvas .ProseMirror {
+  outline: none;
+  min-height: 100%;
+  color: #111827;
+}
+
+/* ── Images flow naturally ─────────── */
+.doc-page-canvas .ProseMirror img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16px 0;
+  border-radius: 6px;
+}
+
+/* ── Page-break hint on <hr> — just acts as a regular divider now ─────── */
+.doc-page-canvas .ProseMirror hr {
+  border: none;
+  border-top: 2px dashed #cbd5e1;
+  margin: 2em 0;
+}

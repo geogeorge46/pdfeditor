@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import {
   FileUp, Settings, FileText, Download, X, Square,
@@ -17,8 +17,12 @@ const PdfInplaceEditor = dynamic(() => import("@/components/PdfInplaceEditor").t
   ssr: false,
 });
 
+const DocumentEditor = dynamic(() => import("@/components/DocumentEditor").then(mod => mod.DocumentEditor), {
+  ssr: false,
+});
+
 type ToolId = 'select' | 'draw' | 'rect' | 'text' | 'highlight' | 'erase';
-type AppMode = 'annotate' | 'document';
+type AppMode = 'annotate' | 'inplace' | 'document';
 
 interface Tool {
   id: ToolId;
@@ -48,6 +52,13 @@ export default function Home() {
   const [activeTool, setActiveTool]   = useState<ToolId>('select');
   const [appMode, setAppMode]         = useState<AppMode>('annotate');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Callback passed to DocumentEditor: receives the generated PDF File
+  // and loads it into the store so Annotate / Edit-over-PDF can open it.
+  const handleSaveToAnnotate = useCallback((savedFile: File) => {
+    setFile(savedFile);
+    setAppMode('annotate');
+  }, [setFile]);
 
   // Apply the tool to active Fabric canvas
   useEffect(() => {
@@ -167,26 +178,34 @@ export default function Home() {
         {file && (
           <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
             <button
-              onClick={() => setAppMode('annotate')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                !isDocMode ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Eye className="w-4 h-4" /> Annotate
-            </button>
+               onClick={() => setAppMode('annotate')}
+               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                 appMode === 'annotate' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+               }`}
+             >
+               <Pen className="w-4 h-4" /> Annotate (Draw)
+             </button>
+             <button
+               onClick={() => setAppMode('inplace')}
+               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                 appMode === 'inplace' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+               }`}
+             >
+               <Eye className="w-4 h-4" /> Edit over PDF
+             </button>
             <button
-              onClick={() => setAppMode('document')}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                isDocMode ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <FileEdit className="w-4 h-4" /> Edit as Document
-            </button>
+               onClick={() => setAppMode('document')}
+               className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                 appMode === 'document' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+               }`}
+             >
+               <FileEdit className="w-4 h-4" /> Word Editor
+             </button>
           </div>
         )}
 
-        {/* Page nav (annotate mode only) */}
-        {file && !isDocMode && (
+        {/* Page nav (annotate and inplace modes) */}
+        {file && appMode !== 'document' && (
           <div className="flex items-center gap-3 text-sm font-medium text-slate-300">
             <Button variant="ghost" size="sm"
               disabled={currentPageIndex <= 0}
@@ -199,8 +218,8 @@ export default function Home() {
         )}
 
         <div className="flex items-center gap-2">
-          {/* Zoom (annotate mode only) */}
-          {file && !isDocMode && (
+          {/* Zoom (annotate and inplace modes) */}
+          {file && appMode !== 'document' && (
             <div className="flex items-center gap-1 mr-2">
               <Button variant="ghost" size="icon" title="Zoom out" onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}>
                 <ZoomOut className="w-4 h-4" />
@@ -251,8 +270,11 @@ export default function Home() {
         )}
 
         {/* ── Canvas / Editor area ────────────────────────────────────── */}
-        {isDocMode ? (
-          // Document Edit mode: full-width inplace editor
+        {appMode === 'document' ? (
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+            <DocumentEditor onSaveToAnnotate={handleSaveToAnnotate} />
+          </div>
+        ) : appMode === 'inplace' ? (
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             <PdfInplaceEditor />
           </div>
@@ -286,7 +308,7 @@ export default function Home() {
         )}
 
         {/* Right properties panel — annotate mode only */}
-        {!isDocMode && (
+        {appMode === 'annotate' && (
           <aside className="w-52 border-l border-slate-800 bg-slate-900 p-4 z-10 flex flex-col gap-4 shrink-0">
             <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Properties</h2>
             {file ? (
@@ -322,8 +344,10 @@ export default function Home() {
         <div className="flex items-center gap-2">
           <div className={`w-1.5 h-1.5 rounded-full ${file ? 'bg-indigo-500 animate-pulse' : 'bg-emerald-500'}`} />
           {file
-            ? isDocMode
-              ? 'Document Edit mode — edit text, then export'
+            ? appMode === 'document'
+              ? 'Document Edit mode — Advanced TipTap word processor'
+              : appMode === 'inplace'
+              ? 'Edit over PDF mode — Text overlay replacement'
               : `Annotate mode — ${TOOLS.find(t => t.id === activeTool)?.label}`
             : 'Ready · Offline mode'}
         </div>
