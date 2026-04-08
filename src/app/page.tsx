@@ -16,7 +16,6 @@ const PdfViewer = dynamic(() => import("@/components/PdfViewer").then(mod => mod
 const PdfInplaceEditor = dynamic(() => import("@/components/PdfInplaceEditor").then(mod => mod.PdfInplaceEditor), {
   ssr: false,
 });
-
 const DocumentEditor = dynamic(() => import("@/components/DocumentEditor").then(mod => mod.DocumentEditor), {
   ssr: false,
 });
@@ -50,6 +49,7 @@ export default function Home() {
 
   const [isDragging, setIsDragging]   = useState(false);
   const [activeTool, setActiveTool]   = useState<ToolId>('select');
+  // Keep original landing experience; switch mode after file load.
   const [appMode, setAppMode]         = useState<AppMode>('annotate');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -145,12 +145,12 @@ export default function Home() {
   }, [activeTool, fabricCanvas]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) { setFile(e.target.files[0]); setAppMode('annotate'); }
+    if (e.target.files?.[0]) { setFile(e.target.files[0]); setAppMode('inplace'); }
   };
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault(); setIsDragging(false);
     const f = e.dataTransfer.files[0];
-    if (f?.type === 'application/pdf') { setFile(f); setAppMode('annotate'); }
+    if (f?.type === 'application/pdf') { setFile(f); setAppMode('inplace'); }
     else alert('Please upload a PDF file.');
   };
   const clearFile = (e: React.MouseEvent) => {
@@ -191,7 +191,7 @@ export default function Home() {
                  appMode === 'inplace' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
                }`}
              >
-               <Eye className="w-4 h-4" /> Edit over PDF
+               <Eye className="w-4 h-4" /> Edit PDF (Keep Layout)
              </button>
             <button
                onClick={() => setAppMode('document')}
@@ -199,8 +199,17 @@ export default function Home() {
                  appMode === 'document' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
                }`}
              >
-               <FileEdit className="w-4 h-4" /> Word Editor
+               <FileEdit className="w-4 h-4" /> Word Editor (Full Rewrite)
              </button>
+          </div>
+        )}
+        {file && (
+          <div className="hidden lg:block text-[11px] text-slate-400 ml-3">
+            {appMode === 'inplace'
+              ? 'Edit PDF keeps original alignment for unchanged text.'
+              : appMode === 'document'
+              ? 'Word Editor is for full reflow/rewrite and rich document editing.'
+              : 'Annotate adds drawings and markup without changing base text layout.'}
           </div>
         )}
 

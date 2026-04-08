@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { usePdfStore } from "@/lib/store";
 import { 
-  Download, FileText, Bold, Italic, Underline as UnderlineIcon, Palette, Eye, PenLine,
+  Download, FileText, Bold, Italic, Underline as UnderlineIcon, Palette, Eye, PenLine, Printer,
   Strikethrough, Highlighter, AlignLeft, AlignCenter, AlignRight, AlignJustify, Undo, Redo,
   List, ListOrdered, Link2, Eraser, Image as ImageIcon
 } from "lucide-react";
-import { exportToPdf, exportToDocx } from "@/lib/exportUtils";
+import { exportEditedPagesToDocx, flattenPdfWithTextEdits } from "@/lib/exportUtils";
 
 if (typeof window !== "undefined") {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
@@ -48,8 +48,7 @@ export function PdfInplaceEditor() {
     numPages,
     setCurrentPageIndex,
     setZoom,
-    pageEdits,
-    updatePageEdit
+    pageEdits
   } = usePdfStore();
 
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -60,6 +59,35 @@ export function PdfInplaceEditor() {
   const [isRendering, setIsRendering] = useState(false);
   const [view, setView] = useState<"edit" | "preview">("edit");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Export scope controls (fixes “download only current page”)
+  const [exportScope, setExportScope] = useState<"current" | "all" | "range">("current");
+  const [rangeStart, setRangeStart] = useState<number>(1); // 1-based for UI
+  const [rangeEnd, setRangeEnd] = useState<number>(1); // 1-based for UI
+  const [isExporting, setIsExporting] = useState(false);
+
+  useEffect(() => {
+    if (numPages <= 0) return;
+    setRangeEnd((prev) => (prev <= 0 ? numPages : Math.min(prev, numPages)));
+    setRangeStart((prev) => Math.min(Math.max(prev, 1), numPages));
+  }, [numPages]);
+
+  const selectedPageIndices = useMemo(() => {
+    if (!numPages) return [];
+    if (exportScope === "current") return [currentPageIndex];
+    if (exportScope === "all") return Array.from({ length: numPages }, (_, i) => i);
+
+    const start = Math.max(1, Math.floor(rangeStart));
+    const end = Math.min(numPages, Math.floor(rangeEnd));
+    const from = Math.min(start, end);
+    const to = Math.max(start, end);
+
+    const indices: number[] = [];
+    for (let i = from - 1; i <= to - 1; i++) {
+      if (i >= 0 && i < numPages) indices.push(i);
+    }
+    return indices;
+  }, [currentPageIndex, exportScope, numPages, rangeEnd, rangeStart]);
 
   const applyFormat = (command: string, val?: string) => {
     document.execCommand(command, false, val);
@@ -148,25 +176,23 @@ export function PdfInplaceEditor() {
         tlDiv.style.width = `${logVP.width}px`;
         tlDiv.style.height = `${logVP.height}px`;
 
-        const currentPageEdits = pageEdits[currentPageIndex] || {};
+        const currentPageEdits = usePdfStore.getState().pageEdits[currentPageIndex] || {};
 
         textContent.items.forEach((item, idx) => {
           if (!("str" in item) || !item.str) return;
-
           const tx = pdfjsLib.Util.transform(logVP.transform, item.transform);
           const fontHeight = Math.hypot(tx[2], tx[3]);
           if (fontHeight < 2) return;
 
           const topPx = tx[5] - fontHeight * 0.8;
           const leftPx = tx[4];
-
           const editData = currentPageEdits[idx];
           const spanText = editData ? editData.text : item.str;
 
           const span = document.createElement("span");
           span.contentEditable = view === "edit" ? "true" : "false";
           span.spellcheck = false;
-          span.innerHTML = spanText; // Support HTML for bold/italic/color
+          span.innerHTML = spanText;
 
           Object.assign(span.style, {
             position: "absolute",
@@ -177,8 +203,8 @@ export function PdfInplaceEditor() {
             whiteSpace: "pre",
             transformOrigin: "0% 0%",
             cursor: view === "edit" ? "text" : "default",
-            color: view === "edit" ? "rgba(0,0,0,0.88)" : "transparent", // Only show if edited in preview to avoid double text
-            background: view === "edit" ? "rgba(255,255,255,0.85)" : "transparent",
+            color: view === "edit" ? "rgba(0,0,0,0.88)" : "transparent",
+            background: view === "edit" ? "#ffffff" : "transparent",
             outline: "none",
             border: "none",
             padding: "0 2px",
@@ -207,7 +233,7 @@ export function PdfInplaceEditor() {
           
           if (view === "preview" && editData) {
             span.style.color = "rgba(0,0,0,0.88)";
-            span.style.background = "#ffffff"; // completely block underlying text when previewing
+            span.style.background = "#ffffff";
           }
 
           span.addEventListener("focus", () => {
@@ -218,13 +244,13 @@ export function PdfInplaceEditor() {
           });
           span.addEventListener("blur", () => {
             if (view === "preview") return;
-            span.style.background = "rgba(255,255,255,0.85)";
+            span.style.background = "#ffffff";
             span.style.boxShadow = "";
             span.style.zIndex = "2";
           });
           span.addEventListener("input", () => {
             applyImageConstraints();
-            updatePageEdit(currentPageIndex, idx, { 
+            usePdfStore.getState().updatePageEdit(currentPageIndex, idx, {
               text: span.innerHTML || "",
               x: leftPx,
               y: topPx,
@@ -253,40 +279,84 @@ export function PdfInplaceEditor() {
     };
   }, [pdfDoc, currentPageIndex, zoom, view]);
 
-  const handleExportPdf = () => {
-    if (!wrapRef.current || !visCanvasRef.current) return;
-    const cloned = wrapRef.current.cloneNode(true) as HTMLDivElement;
-    
-    // Embed the canvas pixel data as an image so the background raster exports correctly
-    const cvs = cloned.querySelector("canvas");
-    if (cvs) {
-      const img = document.createElement("img");
-      img.src = visCanvasRef.current.toDataURL("image/jpeg", 0.95);
-      img.style.display = "block";
-      img.style.maxWidth = "100%";
-      cvs.replaceWith(img);
+  const handleExportPdf = async () => {
+    if (!file || !pdfDoc || selectedPageIndices.length === 0) return;
+    setIsExporting(true);
+    try {
+      const suffix =
+        exportScope === "current"
+          ? `p${currentPageIndex + 1}`
+          : exportScope === "all"
+            ? "all"
+            : `p${Math.min(rangeStart, rangeEnd)}-${Math.max(rangeStart, rangeEnd)}`;
+      const editedFile = await flattenPdfWithTextEdits(
+        file,
+        pdfDoc,
+        pageEdits,
+        selectedPageIndices,
+        `edited_pdf_${suffix}.pdf`
+      );
+      const url = URL.createObjectURL(editedFile);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = editedFile.name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setIsExporting(false);
     }
-
-    // Force styles for spans in exported PDF
-    const spans = cloned.querySelectorAll("span");
-    spans.forEach(span => {
-      // If the text was never touched, the span doesn't need to obscure the perfect native canvas text.
-      if (span.dataset.edited !== "true") {
-        span.style.display = "none"; 
-      } else {
-        // If it WAS edited (or entirely deleted/blank), it must remain opaque to physically block the canvas pixels below it.
-        span.style.color = "rgba(0,0,0,1)";
-        span.style.background = "#ffffff";
-        span.style.display = "inline-block";
-      }
-    });
-
-    exportToPdf(cloned.innerHTML, "edited_pdf");
   };
 
-  const handleExportDocx = () => {
-    if (!wrapRef.current) return;
-    exportToDocx(wrapRef.current.innerHTML, "edited_doc.docx");
+  const handleExportDocx = async () => {
+    if (!pdfDoc || selectedPageIndices.length === 0) return;
+    setIsExporting(true);
+    try {
+      const suffix =
+        exportScope === "current"
+          ? `p${currentPageIndex + 1}`
+          : exportScope === "all"
+            ? "all"
+            : `p${Math.min(rangeStart, rangeEnd)}-${Math.max(rangeStart, rangeEnd)}`;
+      await exportEditedPagesToDocx(pdfDoc, pageEdits, selectedPageIndices, `edited_doc_${suffix}.docx`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handlePrintPdf = async () => {
+    if (!file || !pdfDoc || selectedPageIndices.length === 0) return;
+    setIsExporting(true);
+    try {
+      const suffix =
+        exportScope === "current"
+          ? `p${currentPageIndex + 1}`
+          : exportScope === "all"
+            ? "all"
+            : `p${Math.min(rangeStart, rangeEnd)}-${Math.max(rangeStart, rangeEnd)}`;
+
+      const editedFile = await flattenPdfWithTextEdits(
+        file,
+        pdfDoc,
+        pageEdits,
+        selectedPageIndices,
+        `edited_print_${suffix}.pdf`
+      );
+      const blobUrl = URL.createObjectURL(editedFile);
+      const iframe = document.createElement("iframe");
+      iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+      iframe.src = blobUrl;
+      document.body.appendChild(iframe);
+      iframe.onload = () => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          URL.revokeObjectURL(blobUrl);
+          document.body.removeChild(iframe);
+        }, 2000);
+      };
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   if (!file) return null;
@@ -392,17 +462,63 @@ export function PdfInplaceEditor() {
         <div className="flex-1" />
 
         <div className="flex items-center gap-2 mr-4">
-          <button 
-            onClick={handleExportPdf}
-            className="flex items-center gap-2 px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition-colors font-bold"
+          <select
+            className="h-8 rounded bg-slate-700 text-[11px] text-white px-2 cursor-pointer border border-slate-600"
+            value={exportScope}
+            onChange={(e) => setExportScope(e.target.value as any)}
+            disabled={isExporting}
           >
-            <Download className="w-3 h-3" /> PDF
+            <option value="current">Current page</option>
+            <option value="all">All pages</option>
+            <option value="range">Page range</option>
+          </select>
+
+          {exportScope === "range" && (
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                className="h-8 w-20 rounded bg-slate-700 text-[11px] text-white px-2 border border-slate-600 outline-none"
+                min={1}
+                max={numPages}
+                value={rangeStart}
+                disabled={isExporting}
+                onChange={(e) => setRangeStart(Number(e.target.value))}
+              />
+              <span className="text-[11px] text-slate-300">to</span>
+              <input
+                type="number"
+                className="h-8 w-20 rounded bg-slate-700 text-[11px] text-white px-2 border border-slate-600 outline-none"
+                min={1}
+                max={numPages}
+                value={rangeEnd}
+                disabled={isExporting}
+                onChange={(e) => setRangeEnd(Number(e.target.value))}
+              />
+            </div>
+          )}
+
+          <button
+            onClick={handlePrintPdf}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-1 bg-violet-600 text-white rounded hover:bg-violet-700 transition-colors font-bold disabled:opacity-60"
+            title="Print selected pages with edits"
+          >
+            <Printer className="w-3 h-3" /> {isExporting ? "Preparing..." : "Print"}
           </button>
-          <button 
-            onClick={handleExportDocx}
-            className="flex items-center gap-2 px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors font-bold"
+
+          <button
+            onClick={handleExportPdf}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 transition-colors font-bold disabled:opacity-60"
           >
-            <FileText className="w-3 h-3" /> Word
+            <Download className="w-3 h-3" /> {isExporting ? "Exporting..." : "PDF"}
+          </button>
+          <button
+            onClick={handleExportDocx}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors font-bold disabled:opacity-60"
+          >
+            <FileText className="w-3 h-3" /> {isExporting ? "Exporting..." : "Word"}
           </button>
         </div>
 

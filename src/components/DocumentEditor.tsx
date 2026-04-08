@@ -37,6 +37,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { usePdfStore } from "@/lib/store";
 import { exportToPdf, exportToDocx } from "@/lib/exportUtils";
+import { buildDocumentHtmlWithEdits } from "@/lib/pdfToText";
 
 /* ── Custom FontSize extension ───────────────────────────────────────────── */
 const FontSize = Extension.create({
@@ -446,7 +447,13 @@ function useWordCount(editor: any) {
 }
 
 /* ── Main component ──────────────────────────────────────────────────────── */
-export function DocumentEditor({ onSaveToAnnotate }: { onSaveToAnnotate?: (file: File) => void } = {}) {
+export function DocumentEditor({
+  onSaveToAnnotate,
+  autoImportFromPdf = false,
+}: {
+  onSaveToAnnotate?: (file: File) => void;
+  autoImportFromPdf?: boolean;
+} = {}) {
   // Word Editor is FULLY ISOLATED from the PDF store.
   // It does NOT read/write pageEdits or pdfDoc.
   // The original PDF in Annotate / Edit-over-PDF is NEVER touched.
@@ -481,8 +488,12 @@ export function DocumentEditor({ onSaveToAnnotate }: { onSaveToAnnotate?: (file:
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  // Access PDF from the store for optional user-triggered import
+  // Access PDF from the store for optional import / sync.
+  // IMPORTANT: don't select an object literal here, because it creates a new
+  // reference every render and can trigger React useSyncExternalStore warnings
+  // ("getSnapshot should be cached").
   const pdfDoc = usePdfStore((s) => s.document);
+  const pageEdits = usePdfStore((s) => s.pageEdits);
   const [isImporting, setIsImporting] = useState(false);
 
   const editor = useEditor({
@@ -542,17 +553,52 @@ export function DocumentEditor({ onSaveToAnnotate }: { onSaveToAnnotate?: (file:
   }, [!!editor]); // run only once when editor becomes available
 
   /**
+   * If the Word editor is still blank but we already have edited text (from
+   * "Edit over PDF"), automatically sync so the user isn't seeing an empty page.
+   */
+  useEffect(() => {
+    if (!editor || !pdfDoc) return;
+    if (!pageEdits || Object.keys(pageEdits).length === 0) return;
+
+    const textNow = editor.getText().trim();
+    if (textNow.length > 0) return; // Don't override autosave/import
+
+    let cancelled = false;
+    setIsImporting(true);
+
+    (async () => {
+      try {
+        const totalPages = pdfDoc.numPages;
+        const pageIndices = Array.from({ length: totalPages }, (_, i) => i);
+        const html = await buildDocumentHtmlWithEdits(pdfDoc, pageEdits, pageIndices);
+        if (cancelled) return;
+        if (html.trim()) editor.commands.setContent(html);
+      } catch (err) {
+        console.error("Auto-sync Word editor failed:", err);
+      } finally {
+        if (!cancelled) setIsImporting(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editor, pdfDoc, pageEdits]);
+
+  /**
    * User-triggered PDF import: extracts text from the currently loaded PDF
    * and populates the Word Editor with aligned content.
    * Only runs when the user explicitly clicks "Import from PDF".
    */
-  const handleImportFromPdf = useCallback(async () => {
+  const importFromPdfIntoEditor = useCallback(async (askConfirm: boolean) => {
     if (!editor || !pdfDoc) return;
 
-    const confirmed = window.confirm(
-      "This will replace your current editor content with text extracted from the loaded PDF. Continue?"
-    );
-    if (!confirmed) return;
+    if (askConfirm) {
+      const confirmed = window.confirm(
+        "This will replace your current editor content with text extracted from the loaded PDF. Continue?"
+      );
+      if (!confirmed) return;
+    }
 
     setIsImporting(true);
 
@@ -733,6 +779,19 @@ export function DocumentEditor({ onSaveToAnnotate }: { onSaveToAnnotate?: (file:
       setIsImporting(false);
     }
   }, [editor, pdfDoc]);
+
+  const handleImportFromPdf = useCallback(async () => {
+    await importFromPdfIntoEditor(true);
+  }, [importFromPdfIntoEditor]);
+
+  // Optional: when using DocumentEditor as "Edit over PDF", auto-import once
+  // so users can immediately edit in reflow mode (Word-like) without overlays.
+  useEffect(() => {
+    if (!autoImportFromPdf || !editor || !pdfDoc) return;
+    const hasText = editor.getText().trim().length > 0;
+    if (hasText) return;
+    void importFromPdfIntoEditor(false);
+  }, [autoImportFromPdf, editor, pdfDoc, importFromPdfIntoEditor]);
 
   const { words, chars } = useWordCount(editor);
 
