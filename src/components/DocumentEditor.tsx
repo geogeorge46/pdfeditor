@@ -464,8 +464,7 @@ export function DocumentEditor({
   const [lastSaved, setLastSaved]     = useState<Date | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  const AUTOSAVE_KEY     = "word-editor-draft";
-  const AUTOSAVE_TIME_KEY = "word-editor-draft-time";
+  const AUTOSAVE_PREFIX = "word-editor-draft";
 
   // Dropdown state
   const [showTable,    setShowTable]    = useState(false);
@@ -488,13 +487,20 @@ export function DocumentEditor({
     return () => document.removeEventListener("mousedown", close);
   }, []);
 
-  // Access PDF from the store for optional import / sync.
+  // Access PDF/file from the store for optional import / sync.
   // IMPORTANT: don't select an object literal here, because it creates a new
   // reference every render and can trigger React useSyncExternalStore warnings
   // ("getSnapshot should be cached").
   const pdfDoc = usePdfStore((s) => s.document);
+  const pdfFile = usePdfStore((s) => s.file);
   const pageEdits = usePdfStore((s) => s.pageEdits);
   const [isImporting, setIsImporting] = useState(false);
+
+  const fileFingerprint = pdfFile
+    ? `${pdfFile.name}::${pdfFile.size}::${pdfFile.lastModified}`
+    : "no-file";
+  const autosaveKey = `${AUTOSAVE_PREFIX}:${fileFingerprint}`;
+  const autosaveTimeKey = `${AUTOSAVE_PREFIX}:${fileFingerprint}:time`;
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -526,31 +532,37 @@ export function DocumentEditor({
     },
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
-      localStorage.setItem(AUTOSAVE_KEY, html);
-      localStorage.setItem(AUTOSAVE_TIME_KEY, Date.now().toString());
+      localStorage.setItem(autosaveKey, html);
+      localStorage.setItem(autosaveTimeKey, Date.now().toString());
       setLastSaved(new Date());
     }
   });
 
-  // Load autosaved draft on mount (isolated from PDF store)
+  // Load autosaved draft when editor or source file changes.
+  // This prevents stale drafts from previous PDFs showing up.
   useEffect(() => {
     if (!editor) return;
-    const savedHtml = localStorage.getItem(AUTOSAVE_KEY);
+    const savedHtml = localStorage.getItem(autosaveKey);
     if (savedHtml) {
       // Skip corrupted autosave (only <hr> / empty <p> tags with no real text)
       const textOnly = savedHtml.replace(/<[^>]*>/g, "").trim();
       if (textOnly.length > 0) {
         editor.commands.setContent(savedHtml);
-        const savedTime = localStorage.getItem(AUTOSAVE_TIME_KEY);
+        const savedTime = localStorage.getItem(autosaveTimeKey);
         if (savedTime) setLastSaved(new Date(parseInt(savedTime, 10)));
       } else {
         // Clear the corrupted autosave
-        localStorage.removeItem(AUTOSAVE_KEY);
-        localStorage.removeItem(AUTOSAVE_TIME_KEY);
+        localStorage.removeItem(autosaveKey);
+        localStorage.removeItem(autosaveTimeKey);
+        editor.commands.setContent("<p></p>");
+        setLastSaved(null);
       }
+    } else {
+      // No draft for this file: start clean for the newly loaded PDF.
+      editor.commands.setContent("<p></p>");
+      setLastSaved(null);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [!!editor]); // run only once when editor becomes available
+  }, [editor, autosaveKey, autosaveTimeKey]);
 
   /**
    * If the Word editor is still blank but we already have edited text (from
@@ -769,8 +781,8 @@ export function DocumentEditor({
       if (combinedHtml.trim()) {
         editor.commands.setContent(combinedHtml);
         setLastSaved(new Date());
-        localStorage.setItem(AUTOSAVE_KEY, combinedHtml);
-        localStorage.setItem(AUTOSAVE_TIME_KEY, Date.now().toString());
+        localStorage.setItem(autosaveKey, combinedHtml);
+        localStorage.setItem(autosaveTimeKey, Date.now().toString());
       }
     } catch (err) {
       console.error("PDF text extraction for Word Editor failed:", err);
@@ -778,7 +790,7 @@ export function DocumentEditor({
     } finally {
       setIsImporting(false);
     }
-  }, [editor, pdfDoc]);
+  }, [editor, pdfDoc, autosaveKey, autosaveTimeKey]);
 
   const handleImportFromPdf = useCallback(async () => {
     await importFromPdfIntoEditor(true);

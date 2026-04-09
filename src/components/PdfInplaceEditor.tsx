@@ -43,6 +43,7 @@ export function PdfInplaceEditor() {
   const {
     file,
     document: pdfDoc,
+    setDocument,
     currentPageIndex,
     zoom,
     numPages,
@@ -57,6 +58,7 @@ export function PdfInplaceEditor() {
   const renderTaskRef = useRef<any>(null);
 
   const [isRendering, setIsRendering] = useState(false);
+  const [isDocLoading, setIsDocLoading] = useState(false);
   const [view, setView] = useState<"edit" | "preview">("edit");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -134,6 +136,30 @@ export function PdfInplaceEditor() {
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
+
+  // Ensure Edit-over-PDF can load document directly (without requiring annotate mode first).
+  useEffect(() => {
+    if (!file || pdfDoc) return;
+    let active = true;
+    setIsDocLoading(true);
+
+    (async () => {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const doc = await loadingTask.promise;
+        if (active) setDocument(doc);
+      } catch (err) {
+        console.error("Failed to load PDF in Edit mode:", err);
+      } finally {
+        if (active) setIsDocLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [file, pdfDoc, setDocument]);
 
   useEffect(() => {
     if (!pdfDoc || !visCanvasRef.current || !textLayerRef.current) return;
@@ -634,6 +660,13 @@ export function PdfInplaceEditor() {
 
       {/* ─ Page area ─────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto bg-slate-400 flex justify-center items-start p-8">
+        {isDocLoading && (
+          <div className="fixed inset-0 flex items-center justify-center z-30 pointer-events-none">
+            <div className="bg-slate-800/90 text-slate-200 text-sm rounded-lg px-5 py-3 shadow-lg">
+              Loading PDF…
+            </div>
+          </div>
+        )}
 
         {isRendering && (
           <div className="fixed inset-0 flex items-center justify-center z-30 pointer-events-none">
