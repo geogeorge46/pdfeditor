@@ -32,14 +32,15 @@ import {
   Outdent, RotateCcw, RotateCw, Search, Eraser,
   Triangle, Square, Circle, Minus as MinusIcon,
   ChevronDown, Type, Hash, AlignVerticalJustifyCenter,
-  LayoutList, Info, X, CheckSquare, Save, CheckCircle2
+  LayoutList, Info, X, CheckSquare, Save, CheckCircle2,
+  FileText
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePdfStore } from "@/lib/store";
-import { exportToPdf, exportToDocx } from "@/lib/exportUtils";
+import { exportHtmlToSearchablePdf, exportToPdf, exportToDocx } from "@/lib/exportUtils";
 import { buildDocumentHtmlWithEdits } from "@/lib/pdfToText";
 
-/* ── Custom FontSize extension ───────────────────────────────────────────── */
+/* -- Custom FontSize extension -------------------------------------------- */
 const FontSize = Extension.create({
   name: "fontSize",
   addGlobalAttributes() {
@@ -63,7 +64,7 @@ const FontSize = Extension.create({
   },
 });
 
-/* ── Line Spacing extension ──────────────────────────────────────────────── */
+/* -- Line Spacing extension ----------------------------------------------- */
 const LineHeight = Extension.create({
   name: "lineHeight",
   addGlobalAttributes() {
@@ -88,7 +89,7 @@ const LineHeight = Extension.create({
   },
 });
 
-/* ── Constants ───────────────────────────────────────────────────────────── */
+/* -- Constants ------------------------------------------------------------ */
 const FONT_FAMILIES = [
   { label: "Default",          value: "sans-serif" },
   { label: "Mono",             value: "monospace" },
@@ -130,7 +131,7 @@ const HEADING_LEVELS = [
   { label: "H4",      value: "h4" },
 ];
 
-/* ── SVG Shape definitions ───────────────────────────────────────────────── */
+/* -- SVG Shape definitions ------------------------------------------------ */
 const SHAPES = {
   rectangle: `<div contenteditable="false" style="display:inline-block;width:120px;height:80px;border:2px solid #6366f1;background:rgba(99,102,241,0.1);border-radius:4px;margin:4px;vertical-align:middle;"></div>`,
   circle: `<div contenteditable="false" style="display:inline-block;width:100px;height:100px;border:2px solid #10b981;background:rgba(16,185,129,0.1);border-radius:50%;margin:4px;vertical-align:middle;"></div>`,
@@ -142,7 +143,7 @@ const SHAPES = {
   callout: `<div contenteditable="false" style="display:inline-block;padding:8px 14px;background:rgba(99,102,241,0.08);border:2px solid #6366f1;border-radius:10px;position:relative;margin:4px;font-size:13px;color:#1e293b;min-width:100px;text-align:center;">Callout text</div>`,
 };
 
-/* ── Small toolbar button ────────────────────────────────────────────────── */
+/* -- Small toolbar button ------------------------------------------------- */
 function TB({
   onClick, active = false, title, children, disabled = false,
 }: {
@@ -163,12 +164,12 @@ function TB({
   );
 }
 
-/* ── Separator ───────────────────────────────────────────────────────────── */
+/* -- Separator ------------------------------------------------------------ */
 function Sep() {
   return <div className="w-px h-5 bg-slate-600 mx-0.5 shrink-0" />;
 }
 
-/* ── Toolbar section label ───────────────────────────────────────────────── */
+/* -- Toolbar section label ------------------------------------------------ */
 function ToolbarGroup({ label, children }: { label?: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-0.5">
@@ -177,7 +178,7 @@ function ToolbarGroup({ label, children }: { label?: string; children: React.Rea
   );
 }
 
-/* ── Table picker ────────────────────────────────────────────────────────── */
+/* -- Table picker --------------------------------------------------------- */
 function TablePicker({ onInsert }: { onInsert: (rows: number, cols: number) => void }) {
   const [hover, setHover] = useState({ r: 0, c: 0 });
   const MAX = 8;
@@ -208,7 +209,7 @@ function TablePicker({ onInsert }: { onInsert: (rows: number, cols: number) => v
   );
 }
 
-/* ── Shape picker ────────────────────────────────────────────────────────── */
+/* -- Shape picker --------------------------------------------------------- */
 function ShapePicker({ onInsert }: { onInsert: (html: string) => void }) {
   const items = [
     { label: "Rectangle", key: "rectangle", icon: "▭" },
@@ -241,7 +242,7 @@ function ShapePicker({ onInsert }: { onInsert: (html: string) => void }) {
   );
 }
 
-/* ── Find & Replace modal ────────────────────────────────────────────────── */
+/* -- Find & Replace modal ------------------------------------------------ */
 function FindReplaceModal({
   editor,
   onClose,
@@ -340,7 +341,7 @@ function FindReplaceModal({
   );
 }
 
-/* ── Image Insert Modal ───────────────────────────────────────────────────── */
+/* -- Image Insert Modal ---------------------------------------------------- */
 function ImageInsertModal({ onInsert, onClose }: { onInsert: (src: string, alt?: string) => void; onClose: () => void }) {
   const [tab, setTab] = useState<"upload" | "url">("upload");
   const [url, setUrl] = useState("");
@@ -429,7 +430,7 @@ function ImageInsertModal({ onInsert, onClose }: { onInsert: (src: string, alt?:
   );
 }
 
-/* ── Word / char count ───────────────────────────────────────────────────── */
+/* -- Word / char count ---------------------------------------------------- */
 function useWordCount(editor: any) {
   const [counts, setCounts] = useState({ words: 0, chars: 0 });
   useEffect(() => {
@@ -446,7 +447,7 @@ function useWordCount(editor: any) {
   return counts;
 }
 
-/* ── Main component ──────────────────────────────────────────────────────── */
+/* -- Main component ------------------------------------------------------- */
 export function DocumentEditor({
   onSaveToAnnotate,
   autoImportFromPdf = false,
@@ -459,6 +460,7 @@ export function DocumentEditor({
   // The original PDF in Annotate / Edit-over-PDF is NEVER touched.
   // Changes only reach those modes when the user explicitly clicks "Save to Annotate".
   const [view, setView]               = useState<"edit" | "preview">("edit");
+  const [pageView, setPageView]         = useState<"continuous" | "pages">("continuous");
   const [isExporting,  setExporting]  = useState<"pdf" | "docx" | "annotate" | null>(null);
   const [filename, setFilename]       = useState("Untitled Document");
   const [lastSaved, setLastSaved]     = useState<Date | null>(null);
@@ -805,6 +807,17 @@ export function DocumentEditor({
     void importFromPdfIntoEditor(false);
   }, [autoImportFromPdf, editor, pdfDoc, importFromPdfIntoEditor]);
 
+  const [isImageSelected, setIsImageSelected] = useState(false);
+
+  // useEffect(() => {
+  //   const ed = editor;
+  //   if (!ed) return;
+  //   const updateImageSelected = () => setIsImageSelected(ed.isActive("image"));
+  //   ed.on("selectionUpdate", updateImageSelected);
+  //   updateImageSelected();
+  //   return () => ed.off("selectionUpdate", updateImageSelected);
+  // }, [editor]);
+
   const { words, chars } = useWordCount(editor);
 
   const handlePdf = useCallback(async () => {
@@ -830,106 +843,8 @@ export function DocumentEditor({
     if (!editor || !onSaveToAnnotate) return;
     setExporting("annotate");
     try {
-      // Use jsPDF + html2canvas directly so we can control the render target
-      // and avoid html2canvas inheriting the app dark-theme lab() colors.
-      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
-        import("jspdf" as any),
-        import("html2canvas" as any),
-      ]);
-
       const html = editor.getHTML();
-
-      // Build a fully self-contained white-background HTML document.
-      // All colors are explicit hex/rgb so html2canvas never needs to
-      // resolve oklch / lab / CSS custom properties from the parent page.
-      const styledHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-        *,*::before,*::after{box-sizing:border-box}
-        html,body{margin:0;padding:0;background:#ffffff;color:#1e293b}
-        body{font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.65;padding:48px 64px;background:#ffffff}
-        h1{font-size:28px;font-weight:700;margin:12px 0}
-        h2{font-size:22px;font-weight:600;margin:10px 0}
-        h3{font-size:18px;font-weight:600;margin:8px 0}
-        h4{font-size:15px;font-weight:600;margin:6px 0}
-        p{margin:6px 0}
-        ul,ol{padding-left:24px;margin:6px 0}
-        table{border-collapse:collapse;width:100%;margin:8px 0}
-        td,th{border:1px solid #cbd5e1;padding:5px 10px;text-align:left;background:#ffffff;color:#1e293b}
-        th{background:#f1f5f9;font-weight:600}
-        blockquote{border-left:4px solid #6366f1;margin:8px 0;padding:4px 14px;color:#475569}
-        pre,code{background:#f8fafc;color:#334155;padding:10px 14px;border-radius:6px;font-family:monospace;font-size:13px;white-space:pre-wrap}
-        hr{border:none;border-top:2px solid #e2e8f0;margin:14px 0}
-        a{color:#6366f1}
-        img{max-width:100%;height:auto;display:block}
-        mark{background:#fef08a;color:#1e293b}
-        s{text-decoration:line-through}
-        u{text-decoration:underline}
-        strong{font-weight:700}
-        em{font-style:italic}
-      </style></head><body>${html}</body></html>`;
-
-      // Render into an off-screen iframe so no dark-mode CSS leaks in.
-      const iframe = document.createElement("iframe");
-      iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:794px;height:1123px;border:none;visibility:hidden";
-      document.body.appendChild(iframe);
-
-      await new Promise<void>((res) => {
-        iframe.onload = () => res();
-        iframe.srcdoc = styledHtml;
-      });
-
-      const iframeDoc = iframe.contentDocument!;
-      const body = iframeDoc.body;
-
-      // Force white bg on every element to ensure html2canvas never hits lab()
-      const allEls = iframeDoc.querySelectorAll("*");
-      allEls.forEach((el: any) => {
-        const cs = iframeDoc.defaultView!.getComputedStyle(el);
-        const bg = cs.backgroundColor;
-        // If browser returned a lab/oklch color, override to white
-        if (bg && (bg.startsWith("lab") || bg.startsWith("oklch") || bg.startsWith("color("))) {
-          (el as HTMLElement).style.backgroundColor = "#ffffff";
-        }
-      });
-
-      // Render full-page canvas
-      const canvas = await html2canvas(body, {
-        scale: 2,
-        useCORS: true,
-        backgroundColor: "#ffffff",
-        logging: false,
-        windowWidth: 794,
-        width: 794,
-      });
-
-      document.body.removeChild(iframe);
-
-      // Convert canvas to PDF pages (A4)
-      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-      const imgW = canvas.width;
-      const imgH = canvas.height;
-      const ratio = pageW / imgW;
-      const scaledH = imgH * ratio;
-
-      let yOffset = 0;
-      let pageCount = 0;
-      while (yOffset < scaledH) {
-        if (pageCount > 0) pdf.addPage();
-        const srcY = Math.round(yOffset / ratio);
-        const srcH = Math.min(Math.round(pageH / ratio), imgH - srcY);
-        const sliceCanvas = document.createElement("canvas");
-        sliceCanvas.width = imgW;
-        sliceCanvas.height = srcH;
-        sliceCanvas.getContext("2d")!.drawImage(canvas, 0, srcY, imgW, srcH, 0, 0, imgW, srcH);
-        const sliceDataUrl = sliceCanvas.toDataURL("image/jpeg", 0.97);
-        pdf.addImage(sliceDataUrl, "JPEG", 0, 0, pageW, srcH * ratio);
-        yOffset += pageH;
-        pageCount++;
-      }
-
-      const blob = pdf.output("blob") as Blob;
-
+      const blob = await exportHtmlToSearchablePdf(html);
       const pdfFile = new File([blob], `${filename}.pdf`, { type: "application/pdf" });
       onSaveToAnnotate(pdfFile);
       setSaveSuccess(true);
@@ -966,6 +881,26 @@ export function DocumentEditor({
     }
   };
 
+  const resizeSelectedImage = () => {
+    if (!editor) return;
+    const imageAttrs = editor.getAttributes("image");
+    if (!imageAttrs.src) return;
+
+    const currentWidth = imageAttrs.width ? String(imageAttrs.width) : "";
+    const currentHeight = imageAttrs.height ? String(imageAttrs.height) : "";
+    const width = window.prompt("New image width (px)", currentWidth);
+    if (width === null) return;
+    const height = window.prompt("New image height (px)", currentHeight);
+    if (height === null) return;
+
+    const attrs: Record<string, string> = {};
+    if (width.trim()) attrs.width = width.trim();
+    if (height.trim()) attrs.height = height.trim();
+    if (Object.keys(attrs).length > 0) {
+      editor.chain().focus().updateAttributes("image", attrs).run();
+    }
+  };
+
   const insertHR = () => editor?.chain().focus().setHorizontalRule().run();
 
   const setHeading = (val: string) => {
@@ -984,11 +919,11 @@ export function DocumentEditor({
     return "p";
   };
 
-  /* ── Render ──────────────────────────────────────────────────────────── */
+  /* -- Render ------------------------------------------------------------- */
   return (
     <div className="flex flex-col h-full bg-slate-900 overflow-hidden">
 
-      {/* ── Document Header ────────────────────────────────────────────── */}
+      {/* -- Document Header ------------------------------------------------ */}
       <div className="bg-slate-800 border-b border-slate-700 px-3 py-1.5 flex justify-between items-center shrink-0">
         <input 
           value={filename} 
@@ -1001,7 +936,7 @@ export function DocumentEditor({
         </div>
       </div>
 
-      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+      {/* -- Toolbar ---------------------------------------------------------- */}
       <div className="border-b border-slate-700 bg-slate-800 px-2 py-1.5 flex flex-wrap items-center gap-1 shrink-0 select-none">
 
         {/* Edit / Preview toggle */}
@@ -1021,6 +956,26 @@ export function DocumentEditor({
             }`}
           >
             <Eye className="w-3 h-3" /> Preview
+          </button>
+        </div>
+
+        {/* Page View toggle */}
+        <div className="flex items-center bg-slate-700 rounded-lg p-0.5 mr-1 shrink-0">
+          <button
+            onClick={() => setPageView("continuous")}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+              pageView === "continuous" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <FileText className="w-3 h-3" /> Continuous
+          </button>
+          <button
+            onClick={() => setPageView("pages")}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+              pageView === "pages" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <FileText className="w-3 h-3" /> Pages
           </button>
         </div>
 
@@ -1149,6 +1104,12 @@ export function DocumentEditor({
           <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
         </TB>
 
+        {isImageSelected && (
+          <TB title="Resize selected image" onClick={resizeSelectedImage} disabled={disabled}>
+            <Square className="w-3.5 h-3.5 text-slate-200" />
+          </TB>
+        )}
+
         {/* Insert: Table */}
         <div ref={tableRef} className="relative">
           <TB title="Insert Table" onClick={() => { setShowTable((p) => !p); setShowShapes(false); }} disabled={disabled}>
@@ -1230,24 +1191,28 @@ export function DocumentEditor({
         </Button>
       </div>
 
-      {/* ── Body ────────────────────────────────────────────────────────── */}
+      {/* -- Body ------------------------------------------------------------- */}
       {view === "edit" ? (
-        /* ── Continuous edit canvas ─────────────────────────────────────── */
+        /* -- Continuous edit canvas --------------------------------------- */
         <div className="doc-scroll-area flex-1 overflow-y-auto py-8">
           <div
             ref={canvasRef}
-            className="doc-page-canvas max-w-[850px] mx-auto text-slate-900 text-[14.5px] leading-relaxed transition-all"
+            className={`doc-page-canvas max-w-[850px] mx-auto text-slate-900 text-[14.5px] leading-relaxed transition-all ${
+              pageView === "pages" ? "page-view" : ""
+            }`}
             style={{ minHeight: '800px' }}
           >
             <EditorContent editor={editor} />
           </div>
         </div>
       ) : (
-        /* ── Preview mode ───────────────────────────────────────────────── */
+        /* -- Preview mode -------------------------------------------------- */
         <div className="doc-scroll-area flex-1 overflow-y-auto py-8">
           <div
             ref={canvasRef}
-            className="doc-page-canvas max-w-[850px] mx-auto text-slate-900 text-[14.5px] leading-relaxed transition-all"
+            className={`doc-page-canvas max-w-[850px] mx-auto text-slate-900 text-[14.5px] leading-relaxed transition-all ${
+              pageView === "pages" ? "page-view" : ""
+            }`}
             style={{ minHeight: '800px' }}
           >
             <div
@@ -1258,7 +1223,7 @@ export function DocumentEditor({
         </div>
       )}
 
-      {/* ── Status bar ──────────────────────────────────────────────────── */}
+      {/* -- Status bar ----------------------------------------------------- */}
       <div className="border-t border-slate-700 bg-slate-800 px-4 py-1 flex items-center gap-4 text-xs text-slate-500 shrink-0">
         <span className="flex items-center gap-1">
           <Type className="w-3 h-3" /> {words} words
@@ -1273,7 +1238,7 @@ export function DocumentEditor({
         <span className="text-slate-600">{view === "edit" ? "Editing" : "Preview"} mode</span>
       </div>
 
-      {/* ── Modals ──────────────────────────────────────────────────────── */}
+      {/* -- Modals --------------------------------------------------------- */}
       {showFindRepl && (
         <FindReplaceModal editor={editor} onClose={() => setShowFindRepl(false)} />
       )}

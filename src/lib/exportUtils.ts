@@ -28,7 +28,230 @@ function stripHtmlToPlainText(html: string): string {
   return (html || "").replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
 }
 
-/* ── PDF export via browser print dialog ────────────────────────────────── */
+
+const A4_PAGE_WIDTH = 595.28;
+const A4_PAGE_HEIGHT = 841.89;
+const PDF_MARGIN = 40;
+const DEFAULT_FONT_SIZE = 12;
+const LINE_SPACING = 1.3;
+
+function wrapText(text: string, font: any, size: number, maxWidth: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let currentLine = "";
+
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+    const testWidth = font.widthOfTextAtSize(testLine, size);
+    if (testWidth <= maxWidth || currentLine === "") {
+      currentLine = testLine;
+    } else {
+      lines.push(currentLine);
+      currentLine = word;
+    }
+  }
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines;
+}
+
+function shouldBreakPage(currentY: number, height: number): boolean {
+  return currentY - height < PDF_MARGIN;
+}
+
+async function embedImageFromSource(pdfDoc: PDFDocument, src: string) {
+  if (src.startsWith("data:image/png") || src.startsWith("data:image/svg+xml")) {
+    return pdfDoc.embedPng(src);
+  }
+  if (src.startsWith("data:image/jpeg") || src.startsWith("data:image/jpg")) {
+    return pdfDoc.embedJpg(src);
+  }
+
+  try {
+    const response = await fetch(src);
+    const contentType = response.headers.get("content-type") || "";
+    const bytes = await response.arrayBuffer();
+    if (contentType.includes("png")) return pdfDoc.embedPng(bytes);
+    if (contentType.includes("jpeg") || contentType.includes("jpg")) return pdfDoc.embedJpg(bytes);
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function renderPdfHtmlNodes(
+  pdfDoc: PDFDocument,
+  element: HTMLElement,
+  state: { page: any; y: number; font: any; bold: any; italic: any },
+  outerAlign: "left" | "center" | "right" | "justify" = "left"
+) {
+  const tag = element.tagName.toLowerCase();
+  const availableWidth = A4_PAGE_WIDTH - PDF_MARGIN * 2;
+  const textAlign = getTextAlign(element) ?? outerAlign;
+
+  const drawText = (
+    text: string,
+    font: any,
+    size: number,
+    indent = 0,
+    align: "left" | "center" | "right" | "justify" = textAlign
+  ) => {
+    const lines = wrapText(text, font, size, availableWidth - indent);
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      if (shouldBreakPage(state.y, size * LINE_SPACING)) {
+        state.page = pdfDoc.addPage([A4_PAGE_WIDTH, A4_PAGE_HEIGHT]);
+        state.y = A4_PAGE_HEIGHT - PDF_MARGIN;
+      }
+
+      const lineWidth = font.widthOfTextAtSize(line, size);
+      const maxLineWidth = availableWidth - indent;
+      let x = PDF_MARGIN + indent;
+
+      if (align === "center") {
+        x += Math.max(0, (maxLineWidth - lineWidth) / 2);
+      } else if (align === "right") {
+        x += Math.max(0, maxLineWidth - lineWidth);
+      } else if (align === "justify" && index !== lines.length - 1 && line.includes(" ")) {
+        const words = line.split(/\s+/).filter(Boolean);
+        const totalWordsWidth = words.reduce((sum, word) => sum + font.widthOfTextAtSize(word, size), 0);
+        const spaceCount = words.length - 1;
+        const spaceWidth = spaceCount > 0 ? Math.max(0, (maxLineWidth - totalWordsWidth) / spaceCount) : 0;
+        let currentX = PDF_MARGIN + indent;
+        for (const word of words) {
+          state.page.drawText(word, {
+            x: currentX,
+            y: state.y,
+            size,
+            font,
+            color: rgb(0, 0, 0),
+          });
+          currentX += font.widthOfTextAtSize(word, size) + spaceWidth;
+        }
+        state.y -= size * LINE_SPACING;
+        continue;
+      }
+
+      state.page.drawText(line, {
+        x,
+        y: state.y,
+        size,
+        font,
+        color: rgb(0, 0, 0),
+      });
+      state.y -= size * LINE_SPACING;
+    }
+    state.y -= 4;
+  };
+
+  if (tag === "img") {
+    const src = element.getAttribute("src") ?? "";
+    if (!src) return;
+    const image = await embedImageFromSource(pdfDoc, src);
+    if (!image) return;
+    const { width, height } = image.scale(1);
+    const maxWidth = availableWidth;
+    const maxHeight = A4_PAGE_HEIGHT - PDF_MARGIN * 2;
+    const scale = Math.min(maxWidth / width, maxHeight / height, 1);
+    const drawWidth = width * scale;
+    const drawHeight = height * scale;
+    if (shouldBreakPage(state.y, drawHeight)) {
+      state.page = pdfDoc.addPage([A4_PAGE_WIDTH, A4_PAGE_HEIGHT]);
+      state.y = A4_PAGE_HEIGHT - PDF_MARGIN;
+    }
+    state.page.drawImage(image, {
+      x: PDF_MARGIN,
+      y: state.y - drawHeight,
+      width: drawWidth,
+      height: drawHeight,
+    });
+    state.y -= drawHeight + 8;
+    return;
+  }
+
+  if (tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4") {
+    const size = tag === "h1" ? 22 : tag === "h2" ? 18 : tag === "h3" ? 16 : 14;
+    drawText(element.textContent?.trim() ?? "", state.bold, size);
+    return;
+  }
+
+  if (tag === "p" || tag === "div" || tag === "blockquote") {
+    const font = tag === "blockquote" ? state.italic : state.font;
+    drawText(element.textContent?.trim() ?? "", font, DEFAULT_FONT_SIZE);
+    return;
+  }
+
+  if (tag === "ul" || tag === "ol") {
+    const items = Array.from(element.children).filter((child) => child.tagName?.toLowerCase() === "li");
+    items.forEach((item, index) => {
+      const prefix = tag === "ol" ? `${index + 1}. ` : "• ";
+      const text = `${prefix}${item.textContent?.trim() ?? ""}`;
+      drawText(text, state.font, DEFAULT_FONT_SIZE, 14);
+    });
+    return;
+  }
+
+  if (tag === "table") {
+    const rows = Array.from(element.querySelectorAll("tr"));
+    rows.forEach((row) => {
+      const cells = Array.from(row.children).map((cell) => cell.textContent?.trim() ?? "");
+      drawText(cells.join(" \t "), state.font, DEFAULT_FONT_SIZE);
+    });
+    return;
+  }
+
+  if (tag === "hr") {
+    // Treat <hr> as a page break in the searchable PDF export.
+    state.page = pdfDoc.addPage([A4_PAGE_WIDTH, A4_PAGE_HEIGHT]);
+    state.y = A4_PAGE_HEIGHT - PDF_MARGIN;
+    return;
+  }
+
+  for (const child of Array.from(element.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = child.textContent?.trim();
+      if (text) drawText(text, state.font, DEFAULT_FONT_SIZE);
+    } else if (child instanceof HTMLElement) {
+      await renderPdfHtmlNodes(pdfDoc, child, state, textAlign);
+    }
+  }
+}
+
+export async function exportHtmlToSearchablePdf(html: string): Promise<Blob> {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([A4_PAGE_WIDTH, A4_PAGE_HEIGHT]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const italic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  const body = doc.body;
+
+  const state = { page, y: A4_PAGE_HEIGHT - PDF_MARGIN, font, bold, italic };
+
+  for (const child of Array.from(body.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = child.textContent?.trim();
+      if (text) {
+        const paragraph = doc.createElement("p");
+        paragraph.textContent = text;
+        await renderPdfHtmlNodes(pdfDoc, paragraph, state);
+      }
+    } else if (child instanceof HTMLElement) {
+      await renderPdfHtmlNodes(pdfDoc, child, state);
+    }
+  }
+
+  const bytes = await pdfDoc.save();
+  return new Blob([new Uint8Array(bytes)], { type: "application/pdf" });
+}
+
+/* -- PDF export via browser print dialog ------------------------------- */
 /**
  * Opens a print-preview dialog using the browser's native engine.
  * This is more reliable than html2canvas and supports all modern CSS colors.

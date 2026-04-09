@@ -216,8 +216,38 @@ ul[data-type="taskList"] input[type="checkbox"] {
 
 .ProseMirror hr {
   border: none;
-  border-top: 2px dashed #cbd5e1;
-  margin: 2em 0;
+  height: 1px;
+  margin: 3rem 0;
+  position: relative;
+  background: transparent;
+}
+
+.doc-page-canvas .ProseMirror hr::before {
+  content: "Page break";
+  position: absolute;
+  top: -0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 0.5rem;
+  background: #ffffff;
+  color: #64748b;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.doc-page-canvas.page-view {
+  background-image: none;
+  border: 2px solid #e2e8f0;
+  border-radius: 16px;
+}
+
+.doc-page-canvas.page-view .ProseMirror hr {
+  page-break-before: always;
+  margin: 2rem 0;
+}
+
+.doc-page-canvas.page-view .ProseMirror hr::before {
+  content: "New Page";
 }
 
 .ProseMirror mark {
@@ -369,6 +399,10 @@ ul[data-type="taskList"] input[type="checkbox"] {
   /* Comfortable web reading margins */
   padding: 80px 96px;
   background-color: #ffffff;
+  background-image: linear-gradient(transparent 0%, transparent calc(100% - 1px), rgba(148, 163, 184, 0.15) calc(100% - 1px), rgba(148, 163, 184, 0.15) 100%);
+  background-size: 100% 1120px;
+  background-position: top left;
+  background-repeat: repeat-y;
   
   /* Soft, modern container styling */
   border: 1px solid #e2e8f0;
@@ -380,6 +414,9 @@ ul[data-type="taskList"] input[type="checkbox"] {
   /* Margin for breathing room at top and bottom of scroll area */
   margin-top: 16px;
   margin-bottom: 64px;
+
+  /* Reset page counter */
+  counter-reset: page-counter;
 }
 
 /* ── Ensure ProseMirror itself takes height ────────────── */
@@ -398,9 +435,32 @@ ul[data-type="taskList"] input[type="checkbox"] {
   border-radius: 6px;
 }
 
-/* ── Page-break hint on <hr> — just acts as a regular divider now ─────── */
+/* ── Page-break hint on <hr> — show a stronger page boundary and label ─── */
 .doc-page-canvas .ProseMirror hr {
   border: none;
-  border-top: 2px dashed #cbd5e1;
-  margin: 2em 0;
+  height: 1px;
+  margin: 3rem 0;
+  position: relative;
+  background: transparent;
+  counter-increment: page-counter;
+}
+
+.doc-page-canvas .ProseMirror hr::before {
+  content: "Page " counter(page-counter);
+  position: absolute;
+  top: -0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 0.5rem;
+  background: #ffffff;
+  color: #64748b;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.doc-page-canvas .ProseMirror hr::after {
+  content: "";
+  display: block;
+  width: 100%;
+  border-top: 1px dashed #cbd5e1;
 }
