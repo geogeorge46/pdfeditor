@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { usePdfStore } from "@/lib/store";
 import { 
-  Download, FileText, Bold, Italic, Underline as UnderlineIcon, Palette, Eye, PenLine, Printer,
+  Download, FileText, Bold, Italic, Underline as UnderlineIcon, Palette, Eye, PenLine, Printer, Search,
   Strikethrough, Highlighter, AlignLeft, AlignCenter, AlignRight, AlignJustify, Undo, Redo,
   List, ListOrdered, Link2, Eraser, Image as ImageIcon
 } from "lucide-react";
@@ -65,6 +65,12 @@ export function PdfInplaceEditor() {
   const [rangeStart, setRangeStart] = useState<number>(1); // 1-based for UI
   const [rangeEnd, setRangeEnd] = useState<number>(1); // 1-based for UI
   const [isExporting, setIsExporting] = useState(false);
+  const [showFindReplace, setShowFindReplace] = useState(false);
+  const [findText, setFindText] = useState("");
+  const [replaceText, setReplaceText] = useState("");
+  const [useRegex, setUseRegex] = useState(false);
+  const [matchCase, setMatchCase] = useState(false);
+  const [findStatus, setFindStatus] = useState("");
 
   useEffect(() => {
     if (numPages <= 0) return;
@@ -88,6 +94,19 @@ export function PdfInplaceEditor() {
     }
     return indices;
   }, [currentPageIndex, exportScope, numPages, rangeEnd, rangeStart]);
+
+  const stripHtml = (s: string) => (s || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
+  const buildRegex = () => {
+    if (!findText) return null;
+    try {
+      if (useRegex) return new RegExp(findText, matchCase ? "g" : "gi");
+      const escaped = findText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(escaped, matchCase ? "g" : "gi");
+    } catch {
+      return null;
+    }
+  };
 
   const applyFormat = (command: string, val?: string) => {
     document.execCommand(command, false, val);
@@ -277,7 +296,64 @@ export function PdfInplaceEditor() {
         renderTaskRef.current = null;
       }
     };
-  }, [pdfDoc, currentPageIndex, zoom, view]);
+  }, [pdfDoc, currentPageIndex, zoom, view, pageEdits]);
+
+  const handleFind = async () => {
+    if (!pdfDoc) return;
+    const regex = buildRegex();
+    if (!regex) {
+      setFindStatus(findText ? "Invalid regex pattern" : "Enter text to find");
+      return;
+    }
+
+    let total = 0;
+    for (const pageIndex of selectedPageIndices) {
+      const page = await pdfDoc.getPage(pageIndex + 1);
+      const textContent = await page.getTextContent();
+      const editsForPage = usePdfStore.getState().pageEdits[pageIndex] || {};
+
+      for (const [idx, item] of textContent.items.entries()) {
+        if (!("str" in item) || !item.str) continue;
+        const currentText = editsForPage[idx] ? stripHtml(editsForPage[idx].text ?? "") : item.str;
+        if (!currentText) continue;
+        const matches = currentText.match(regex);
+        if (matches) total += matches.length;
+      }
+    }
+    setFindStatus(`Found ${total} match(es) in ${selectedPageIndices.length} page(s).`);
+  };
+
+  const handleReplaceAll = async () => {
+    if (!pdfDoc) return;
+    const regex = buildRegex();
+    if (!regex) {
+      setFindStatus(findText ? "Invalid regex pattern" : "Enter text to replace");
+      return;
+    }
+
+    let replaced = 0;
+    for (const pageIndex of selectedPageIndices) {
+      const page = await pdfDoc.getPage(pageIndex + 1);
+      const textContent = await page.getTextContent();
+      const editsForPage = usePdfStore.getState().pageEdits[pageIndex] || {};
+
+      for (const [idx, item] of textContent.items.entries()) {
+        if (!("str" in item) || !item.str) continue;
+        const currentText = editsForPage[idx] ? stripHtml(editsForPage[idx].text ?? "") : item.str;
+        if (!currentText) continue;
+
+        const before = currentText;
+        const after = before.replace(regex, replaceText);
+        if (after !== before) {
+          const count = before.match(regex)?.length ?? 0;
+          replaced += count;
+          usePdfStore.getState().updatePageEdit(pageIndex, idx, { text: after });
+        }
+      }
+    }
+
+    setFindStatus(`Replaced ${replaced} match(es) in ${selectedPageIndices.length} page(s).`);
+  };
 
   const handleExportPdf = async () => {
     if (!file || !pdfDoc || selectedPageIndices.length === 0) return;
@@ -436,6 +512,9 @@ export function PdfInplaceEditor() {
 
             <button className="p-1.5 rounded hover:bg-slate-700 hover:text-white" title="Insert Link" onMouseDown={(e) => { e.preventDefault(); insertLink(); }}><Link2 className="w-4 h-4" /></button>
             <button className="p-1.5 rounded hover:bg-slate-700 hover:text-white" title="Insert Inline Image" onMouseDown={(e) => { e.preventDefault(); fileInputRef.current?.click(); }}><ImageIcon className="w-4 h-4 text-emerald-400" /></button>
+            <button className="p-1.5 rounded hover:bg-slate-700 hover:text-white" title="Find & Replace in selected pages" onMouseDown={(e) => { e.preventDefault(); setShowFindReplace((v) => !v); }}>
+              <Search className="w-4 h-4 text-yellow-300" />
+            </button>
 
             <div className="w-px h-5 bg-slate-600 mx-1" />
 
@@ -582,6 +661,61 @@ export function PdfInplaceEditor() {
           />
         </div>
       </div>
+
+      {showFindReplace && (
+        <div className="fixed right-4 top-20 z-40 w-[340px] rounded-lg border border-slate-600 bg-slate-800/95 shadow-2xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-slate-200">Find & Replace</p>
+            <button className="text-xs text-slate-400 hover:text-white" onClick={() => setShowFindReplace(false)}>Close</button>
+          </div>
+
+          <div className="space-y-2">
+            <input
+              value={findText}
+              onChange={(e) => setFindText(e.target.value)}
+              placeholder="Find..."
+              className="w-full h-8 rounded bg-slate-700 border border-slate-600 px-2 text-xs text-white outline-none"
+            />
+            <input
+              value={replaceText}
+              onChange={(e) => setReplaceText(e.target.value)}
+              placeholder="Replace with..."
+              className="w-full h-8 rounded bg-slate-700 border border-slate-600 px-2 text-xs text-white outline-none"
+            />
+
+            <div className="flex items-center gap-4 text-xs text-slate-300">
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" checked={useRegex} onChange={(e) => setUseRegex(e.target.checked)} />
+                Regex
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} />
+                Match case
+              </label>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                className="flex-1 h-8 rounded bg-slate-700 hover:bg-slate-600 text-xs text-white"
+                onClick={() => void handleFind()}
+              >
+                Find
+              </button>
+              <button
+                className="flex-1 h-8 rounded bg-indigo-600 hover:bg-indigo-500 text-xs text-white"
+                onClick={() => void handleReplaceAll()}
+              >
+                Replace All
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-400">
+              Scope: <span className="text-slate-200">{exportScope === "range" ? `${Math.min(rangeStart, rangeEnd)}-${Math.max(rangeStart, rangeEnd)}` : exportScope}</span>
+            </p>
+            {findStatus && <p className="text-[11px] text-emerald-300">{findStatus}</p>}
+          </div>
+        </div>
+      )}
     </>
   );
 }
