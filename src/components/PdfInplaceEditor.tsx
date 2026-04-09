@@ -10,8 +10,8 @@ import {
 } from "lucide-react";
 import { exportEditedPagesToDocx, flattenPdfWithTextEdits } from "@/lib/exportUtils";
 
-if (typeof window !== "undefined") {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+if (typeof window !== "undefined" && typeof location !== "undefined") {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${location.origin}/pdf.worker.min.mjs`;
 }
 
 const FONT_FAMILIES = [

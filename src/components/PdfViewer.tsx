@@ -6,8 +6,8 @@ import { usePdfStore } from "@/lib/store";
 import { Canvas, Image } from "fabric";
 
 // Initialize the PDF.js worker
-if (typeof window !== "undefined") {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+if (typeof window !== "undefined" && typeof location !== "undefined") {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${location.origin}/pdf.worker.min.mjs`;
 }
 
 export function PdfViewer() {
